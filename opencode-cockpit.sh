@@ -28578,6 +28578,20 @@ cat > 'web/swarm.css' <<'OC_EOF_92'
 .sw-workspace .sw-skill code { padding: 0; color: var(--sw-muted); font-size: 11px; background: transparent; }
 .sw-workspace .sw-related { margin-top: 4px; font-size: 12px; gap: 3px 6px; }
 .sw-workspace .sw-text-button { min-height: auto; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: transparent; font: inherit; }
+/* The public shell paints enabled buttons as primary actions. Keep that treatment on primary controls only. */
+#swarm-workspace :is(.sw-button:not(.sw-primary), .sw-group, .sw-text-button) {
+  background-image: none;
+  box-shadow: none;
+}
+#swarm-workspace .sw-group[aria-pressed=true] {
+  background-color: color-mix(in srgb, var(--sw-link) 9%, var(--sw-paper));
+  border-color: color-mix(in srgb, var(--sw-link) 32%, var(--sw-paper));
+  box-shadow: inset 3px 0 var(--sw-link);
+}
+#swarm-workspace .sw-group[aria-pressed=true]:hover {
+  background-color: color-mix(in srgb, var(--sw-link) 14%, var(--sw-paper));
+}
+#swarm-workspace .sw-text-button { min-height: auto; }
 .sw-workspace .sw-error { color: var(--bad, var(--aui-red, #994a42)); }
 .sw-workspace .sw-message { color: var(--ok, var(--aui-green, #426c4c)); }
 @media (max-width: 720px) {
@@ -29122,7 +29136,7 @@ b9683dee17e348d338bd80379f92134d50e41df4554d69bb29143a4dd2df4f70 web/look-home.c
 8a74ed97cdea6696f0f63d554232efc86a82b8bd94e8527fa9968bc0859a013b web/look-records.css
 e0fe3cd4ea4d8fe1c3c8f1ea24aa92a2bdae9f2558c35b43fe0b357141e819ab web/look-team.css
 ea2b20db35b62d8b21432a95f54fe2b4ce0b8372969d8e6763b515c695a5ee5d web/status.js
-af6df0579a60ea2727e20a04473d4f54604ee39909308a773f34c6ec25508b1e web/swarm.css
+3d6d42f1bdc6cd8c2ba07d1badb0e4ba13ff806d2f5f7d428a434b5f3c5a665b web/swarm.css
 a34fec3048137568f3e49ee0bf5f0f01143e176dfcfb2f66b262f2ba239bb974 web/swarm.js
 OC_EOF_94
 if [ "$bad" -ne 0 ]; then echo "opencode-cockpit.sh: $bad of $n files are wrong; do not use this folder" >&2; exit 1; fi
