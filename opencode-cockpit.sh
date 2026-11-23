@@ -9912,6 +9912,23 @@ function fetchMock(url, options = {}) {
     if (parsed.searchParams.get('run') === 'missing-run') { status = 404; result = {cli: 'not-found'}; }
     else { result = detail(parsed.searchParams.get('run'), parsed.searchParams.get('id')); }
   }
+  else if (p === '/swarms') {
+    const run = parsed.searchParams.get('run') || team.run;
+    if (run !== team.run && run !== 'old-run') { status = 404; result = {cli: 'not-found'}; }
+    else {
+      const live = run === team.run;
+      const skill = {id: 'registry:proofread', source_id: 'proofread', source: 'registry', title: 'Proofreading', version: '2', domain: 'Editing', category: 'Review', status: ''};
+      const receipt = {id: 'library:skill-review-1', title: 'Review checklist', version: 1};
+      const orders = live ? Object.values(stateOrders) : history.days['2030-04-09'].orders.filter(order => order.run === run);
+      const tasks = orders.map(order => {
+        const assigned = live && order.id === 'main' ? [skill.id] : [];
+        const receipts = live && order.id === 'main' ? [receipt] : [];
+        return {id: order.id, title: order.title, state: order.state, to: order.to, parent: order.parent || null,
+          skills: assigned, skill_receipts: receipts, used_skills: receipts.map(item => item.id)};
+      });
+      result = {run, writable: live, tasks, skills: [skill], members: live ? team.seats : [oldLead], swarms: [], registry_status: 'ready', board: null};
+    }
+  }
   else if (p === '/file') { result = {text: '<b>Plain file</b>', rev: 1, size: 5}; }
   else if (p === '/library') { result = libraryListing(); }
   else if (p === '/library/efficiency') { result = efficiency; }
@@ -10002,7 +10019,7 @@ function assertViewSummaries(view) {
     });
     assert.equal(groups.reduce((n, group) => n + Number(group.getAttribute('data-count')), 0), records.length);
   }
-  if (name === 'library') { expected = {entries:entries.filter(e=>e.current === undefined ? e.status === 'accepted' : e.current).length, uses:entries.reduce((n, e) => n + e.used, 0), review:entries.filter(e => e.status === 'proposed').length}; }
+  if (name === 'library') { expected = {records:entries.length, entries:entries.filter(e=>e.current === undefined ? e.status === 'accepted' : e.current).length, uses:entries.reduce((n, e) => n + e.used, 0), review:entries.filter(e => e.status === 'proposed').length}; }
   else if (name === 'status') { const chip = byId('status-chip'); expected = Object.fromEntries(['not-ended', 'held', 'judging', 'attention'].map(k => [k, Number(chip.getAttribute('data-' + k))])); }
   else if (name === 'help') { expected = {seats: team.seats.length, orders: team.order_totals ? team.order_totals.orders : 'Unavailable', files: team.files.filter(f => f.accepted).length}; }
   assert.ok(expected, name);
@@ -12028,7 +12045,24 @@ async function assertKeyboardShortcuts() {
   assert.equal(document.activeElement, focusedFile); assert.ok(focusedFile.isConnected);
   detailStates[envelope.body.id] = 'SUCCEEDED'; await refresh();
   assert.equal(q('[data-view="order"]').getAttribute('data-state'), 'SUCCEEDED');
+  history.runs.push({run: 'old-run', day: '2030-04-09', live: false}, {run: team.run, day: today, live: true});
+  await refresh();
   const library = await navigate('#/library', 'library');
+  const evidence = library.querySelector('[data-evidence-task="main"]');
+  assert.deepEqual(evidence.querySelectorAll('td').map(cell => cell.textContent), ['team:lead', 'Proofreading', 'Review checklist v1']);
+  assert.equal(evidence.querySelector('[data-order-link]').getAttribute('href'), '#/order/live-run/main');
+  const runPicker = library.querySelector('[data-evidence-run]');
+  assert.deepEqual(runPicker.querySelectorAll('option').map(option => option.value), [team.run, 'old-run']);
+  runPicker.value = 'old-run'; runPicker.dispatch('change'); await flush();
+  const archivedEvidence = library.querySelector('[data-evidence-task="old"]');
+  assert.ok(archivedEvidence);
+  assert.equal(archivedEvidence.querySelector('[data-order-link]').getAttribute('href'), '#/order/old-run/old');
+  assert.deepEqual(archivedEvidence.querySelectorAll('td').slice(-2).map(cell => cell.textContent), ['None assigned', 'None reported']);
+  assert.equal(library.querySelector('[data-evidence-task="main"]'), null);
+  const currentPicker = library.querySelector('[data-evidence-run]');
+  currentPicker.value = team.run; currentPicker.dispatch('change'); await flush();
+  assert.ok(library.querySelector('[data-evidence-task="main"]'));
+  history.runs.length = 0;
   assert.equal(library.querySelectorAll('[data-lib-entry]').length, entries.length);
   assert.equal(library.querySelector('[data-lib-filter="all"]').getAttribute('aria-pressed'), 'true');
   assert.ok(library.textContent.indexOf('In use') < library.textContent.indexOf('Waiting for you')); assert.ok(library.textContent.indexOf('Waiting for you') < library.textContent.indexOf('History'));
@@ -12406,9 +12440,11 @@ async function assertKeyboardShortcuts() {
   for (const dateRoute of ['#/library', '#/library/' + datedEntry.id]) {
     team.updated = Date.parse(datedEntry.at) / 1000; await refresh();
     const datedView = await navigate(dateRoute, 'library');
-    assert.equal(datedView.querySelector('time[datetime="' + datedEntry.at + '"]').textContent, 'Today');
+    const dateScope = dateRoute === '#/library' ? '[data-lib-entry][data-lib-id="' + datedEntry.id + '"]' : '[data-lib-detail]';
+    const recordDate = () => datedView.querySelector(dateScope).querySelector('time[datetime="' + datedEntry.at + '"]');
+    assert.equal(recordDate().textContent, 'Today');
     team.updated += 86400; await refresh();
-    assert.equal(datedView.querySelector('time[datetime="' + datedEntry.at + '"]').textContent, 'Yesterday', 'Date labels update at the backend UTC day boundary without entry changes');
+    assert.equal(recordDate().textContent, 'Yesterday', 'Date labels update at the backend UTC day boundary without entry changes');
   }
   datedEntry.at = savedDate; team.updated = savedClock; await refresh();
   {
@@ -28603,11 +28639,11 @@ import * as F from './format.mjs';
     var groups = {}; entries.forEach(function (e) { var key = e.kind === 'lesson' ? e.history_group || e.title : e.id; (groups[key] || (groups[key] = [])).push(e); });
     return h('div', {'class': 'library-history'}, ...Object.keys(groups).map(function (key) {
       var records = groups[key], first = records[0]; return h('div', {'class': 'library-history-row', 'data-history-group': key},
-        h('div', {'class': 'history-name'}, kindChip(first.kind), libLink(first.id, entryTitle(first)), records.length > 1 ? h('span', {'class': 'hint', 'data-recorded-count': records.length}, F.label(F.count(records.length), {'2': 'recorded twice'}, 'recorded ' + F.plural(records.length, 'time'))) : null),
+        h('div', {'class': 'history-name'}, kindChip(first.kind), libLink(first.id, entryTitle(first)), first.metrics ? h('small', {'class': 'library-run-result'}, stateLabel(first.metrics.state), ' / ', countText(first.metrics.launches, 'launch'), ' / ', F.durationSec(first.metrics.seconds)) : null, records.length > 1 ? h('span', {'class': 'hint', 'data-recorded-count': records.length}, F.label(F.count(records.length), {'2': 'recorded twice'}, 'recorded ' + F.plural(records.length, 'time'))) : null),
         h('div', {'class': 'history-records'}, ...records.map(function (e) { return h('div', {'class': 'history-record hint', 'data-lib-entry': '', 'data-lib-id': e.id, 'data-kind': e.kind, 'data-lib-status': e.status},
           libLink(e.id, 'Version ' + F.count(e.version)), badge(e.status), h('time', {datetime: e.at, title: e.at}, when(e.at)), h('span', {'data-library-uses': e.id}, F.plural(e.used, 'use')), entrySource(e),
-          h('span', null, 'Last used: ', e.last_used ? orderLink(e.last_used.run, e.last_used.order, e.last_used.title) : 'Not used yet'),
-          h('span', {'data-entry-pending': e.pending || 0}, F.plural(F.numOr(e.pending, 0), 'pending proposal')), h('div', {'class': 'library-tags'}, ...(e.tags || []).map(function (tag) { return h('span', null, tag); })),
+          e.last_used ? h('span', null, 'Last used: ', orderLink(e.last_used.run, e.last_used.order, e.last_used.title)) : null,
+          e.pending ? h('span', {'data-entry-pending': e.pending}, F.plural(e.pending, 'pending proposal')) : null, h('div', {'class': 'library-tags'}, ...(e.tags || []).map(function (tag) { return h('span', null, tag); })),
           h('code', {'class': 'entry-path', title: e.source.path}, e.source.path), e.reason ? h('span', {title: e.reason, 'class': 'history-reason'}, e.reason) : null); })));
     }));
   }
@@ -28646,16 +28682,242 @@ import * as F from './format.mjs';
     });
     box.appendChild(table); return box;
   }
+  var evidenceRun = '', evidenceCache = null;
+  function selectedEvidenceRun() { return evidenceRun || (S.history && S.history.live_run) || liveRun() || ''; }
+  function loadLibraryEvidence() {
+    var run = selectedEvidenceRun();
+    if (evidenceCache && evidenceCache.run === run && Date.now() < evidenceCache.until) { return evidenceCache.promise; }
+    var cache = {run: run, until: Date.now() + 15000};
+    cache.promise = get('/swarms' + (run ? '?run=' + encodeURIComponent(run) : ''), 5000).then(function (doc) {
+      return !run || doc.run === run ? doc : null;
+    }).catch(function () { return null; });
+    evidenceCache = cache; return cache.promise;
+  }
+  function libraryEvidence(doc) {
+    var run = selectedEvidenceRun(), runs = (S.history && S.history.runs) || [];
+    var select = h('select', {'data-evidence-run': ''}, ...runs.slice().reverse().map(function (item) {
+      return h('option', {value: item.run, selected: item.run === run}, item.day + ' / ' + item.run + (item.live ? ' (live)' : ''));
+    }));
+    on(select, 'change', function (ev) { evidenceRun = ev.currentTarget.value; S.libEvidence = null; renderLibrary(S.efficiency); loadLibrary(); });
+    var box = h('section', {id: 'library-evidence', 'class': 'library-source-panel', tabindex: -1},
+      h('div', {'class': 'library-panel-head'}, h('h3', null, 'Skill evidence by run'), runs.length ? h('label', null, 'Run', select) : null));
+    if (!doc || (run && doc.run !== run)) { box.appendChild(h('p', {role: 'status'}, 'Run evidence unavailable.')); return box; }
+    var catalog = new Map(doc.skills.map(function (item) { return [item.id, item]; }));
+    var rows = doc.tasks.map(function (task) {
+      var named = (task.skills || []).map(function (key) { return (catalog.get(key) || {}).title || key; });
+      var receipts = (task.skill_receipts || []).map(function (r) { return r.title + ' v' + F.count(r.version); });
+      return h('tr', {'data-evidence-task': task.id}, h('th', {scope: 'row'}, orderLink(doc.run, task.id, task.title)), h('td', null, task.to || 'Unassigned'),
+        h('td', null, named.join(', ') || 'None assigned'), h('td', null, receipts.join(', ') || 'None reported'));
+    });
+    if (rows.length) {
+      var head = h('tr', null, ...['Source order', 'Owner', 'Assigned skills', 'Reported skill use'].map(function (name) { return h('th', {scope: 'col'}, name); }));
+      box.appendChild(h('div', {'class': 'library-scroll'}, h('table', null, h('thead', null, head), h('tbody', null, ...rows))));
+    } else { box.appendChild(h('p', {'class': 'hint'}, 'No orders in this run yet.')); }
+    box.appendChild(h('a', {href: '#/swarms/' + encodeURIComponent(doc.run)}, 'Open this swarm workspace'));
+    return box;
+  }
+  function libraryHandIns() {
+    var team = S.team;
+    var card = h('section', {id: 'library-handins', 'class': 'library-source-panel', tabindex: -1},
+      h('h3', null, 'Hand-ins from the live team'));
+    if (!team) { card.appendChild(h('p', {'class': 'hint'}, 'Live files unavailable.')); return card; }
+    var files = (team.files || []).filter(function (file) { return file.order && file.path; });
+    if (!files.length) { card.appendChild(h('p', {'class': 'hint'}, 'No files handed in for this run.')); return card; }
+    var list = h('ul', {'class': 'library-handins'});
+    files.forEach(function (file) {
+      var kept = S.library.entries.find(function (entry) {
+        return entry.current && entry.source.run === team.run && entry.source.order === file.order && entry.source.path === file.path && entry.revision === file.rev;
+      });
+      var href = '#/library/keep/' + [team.run, file.order, file.path].map(encodeURIComponent).join('/');
+      list.appendChild(h('li', {'data-source-item': file.path}, h('div', null,
+        h('strong', null, F.splitPath(file.path).file), h('code', null, file.path)),
+        h('div', null, orderLink(team.run, file.order, orderTitle(team.run, file.order)),
+          h('small', null, (file.by || 'Author unavailable') + ' / rev ' + file.rev + ' / ' + F.bytes(file.size))),
+        kept ? libLink(kept.id, 'Open kept record') : h('a', {href: href}, 'Review file to keep')));
+    });
+    card.appendChild(list); return card;
+  }
+  function libraryPosition(name, id) {
+    var control = h('button', {type: 'button', 'class': 'quiet', 'aria-controls': id}, name);
+    return on(control, 'click', function (event) {
+      var menu = event.currentTarget.parentNode; if (menu.tagName === 'DETAILS') { menu.open = false; }
+      var destination = $(id); if (!destination) { return; }
+      destination.focus({preventScroll: true}); destination.scrollIntoView({block: 'start'});
+    });
+  }
+  // Files stay in the tab. Only the selected Markdown page is read on demand.
+  var localShelf = {pages: [], servers: null, config: '', page: null, excerpt: '', limit: 12, revision: 0};
+  var configRead = 0, lessonRead = 0;
+  function lessonIndex(words) {
+    var box = h('section', {'data-lesson-index': ''}, h('h4', null, 'Lessons'));
+    var input = h('input', {type: 'file', accept: '.json,application/json', 'data-library-lessons': ''});
+    on(input, 'change', async function (ev) {
+      var file = ev.currentTarget.files[0]; if (!file) { return; }
+      var token = ++lessonRead;
+      try {
+        if (file.size > 2097152) { throw Error(); }
+        var payload = JSON.parse(await file.text());
+        var rows = Array.isArray(payload) ? payload : payload && payload.lessons;
+        if (!Array.isArray(rows)) { throw Error(); }
+        var lessons = rows.map(function (row) {
+          if (!row || typeof row.title !== 'string' || !row.title.trim() ||
+              (row.status != null && typeof row.status !== 'string')) { throw Error(); }
+          return {title: row.title.trim(), status: (row.status || '').trim() || 'Status unavailable'};
+        });
+        if (token !== lessonRead) { return; }
+        localShelf.lessons = lessons; localShelf.lessonFile = file.name; localShelf.lessonLimit = 24;
+      } catch (_) {
+        if (token !== lessonRead) { return; }
+        localShelf.lessons = null; localShelf.lessonFile = 'Unavailable. Choose a JSON lesson list under 2 MiB.';
+      }
+      redrawLocalShelf();
+    });
+    box.appendChild(h('label', null, 'Choose a lesson index', input));
+    if (!localShelf.lessons) {
+      box.appendChild(h('p', {role: 'status'}, localShelf.lessonFile || 'No lesson index connected.')); return box;
+    }
+    var tally = new Map();
+    var matches = localShelf.lessons.filter(function (row) {
+      var text = (row.title + ' ' + row.status).toLowerCase();
+      return words.every(function (word) { return text.includes(word); });
+    });
+    matches.forEach(function (row) { tally.set(row.status, (tally.get(row.status) || 0) + 1); });
+    var totals = Array.from(tally).sort(function (a, b) { return a[0].localeCompare(b[0]); })
+      .map(function (pair) { return pair[0] + ' ' + pair[1]; });
+    box.appendChild(h('p', {role: 'status', 'data-lesson-count': ''}, localShelf.lessonFile + ' / ' + matches.length + ' matching / ' + countText(localShelf.lessons.length, 'lesson')));
+    if (totals.length) { box.appendChild(h('p', {'class': 'hint', 'data-lesson-states': ''}, totals.join(' · '))); }
+    var list = h('ul', {'class': 'library-local-list'});
+    matches.slice(0, localShelf.lessonLimit).forEach(function (row) {
+      list.appendChild(h('li', {'data-lesson-row': ''}, h('strong', null, row.title), ' / ', h('span', null, row.status)));
+    });
+    box.appendChild(list);
+    if (matches.length > localShelf.lessonLimit) {
+      box.appendChild(on(h('button', {type: 'button', 'class': 'quiet'}, 'Show more lessons'), 'click', function () {
+        localShelf.lessonLimit += 24; redrawLocalShelf();
+      }));
+    }
+    return box;
+  }
+  function redrawLocalShelf() {
+    localShelf.revision++;
+    if (S.view === 'library' && !S.route[1] && S.library) { renderLibrary(S.efficiency); }
+  }
+  function libraryReadingRoom() {
+    var panel = h('section', {id: 'library-reading', 'class': 'library-source-panel', tabindex: -1},
+      h('h3', null, 'Reference sources'), h('p', {'class': 'hint'}, 'Selected files stay in this tab. Reload to disconnect them.'));
+    var wiki = h('input', {type: 'file', multiple: true, webkitdirectory: '', 'data-library-wiki': ''});
+    on(wiki, 'change', function (ev) {
+      var docs = Array.from(ev.currentTarget.files || []).filter(function (file) { return /\.(md|markdown)$/i.test(file.name); });
+      localShelf.pages = docs.map(function (file) { return {file: file, path: file.webkitRelativePath || file.name}; }).sort(function (a, b) { return a.path.localeCompare(b.path); });
+      localShelf.folderSelected = true; localShelf.page = null; localShelf.excerpt = ''; localShelf.limit = 12; redrawLocalShelf();
+    });
+    var config = h('input', {type: 'file', accept: '.json,application/json', 'data-library-mcp': ''});
+    on(config, 'change', async function (ev) {
+      var file = ev.currentTarget.files[0]; if (!file) { return; }
+      var seq = ++configRead;
+      try {
+        if (file.size > 2097152) { throw Error(); }
+        var value = JSON.parse(await file.text());
+        var exported = value && (value.tools || (value.result && value.result.tools));
+        var servers = value && (value.mcpServers || value.mcp);
+        var tools = Array.isArray(exported) ? exported.map(function (tool) {
+          if (!tool || typeof tool.name !== 'string' || !tool.name.trim()) { throw Error(); }
+          var fields = tool.inputSchema && tool.inputSchema.properties;
+          return {name: tool.name, fields: fields && !Array.isArray(fields) && typeof fields === 'object' ? Object.keys(fields).sort() : []};
+        }) : null;
+        if (!tools && (!servers || typeof servers !== 'object' || Array.isArray(servers))) { throw Error(); }
+        if (seq !== configRead) { return; }
+        localShelf.tools = tools; localShelf.servers = tools ? null : Object.keys(servers).sort(); localShelf.config = file.name;
+      } catch (_) {
+        if (seq !== configRead) { return; }
+        localShelf.servers = null; localShelf.tools = null; localShelf.config = 'Unavailable. Choose a server config or tools/list JSON under 2 MiB.';
+      }
+      redrawLocalShelf();
+    });
+    var columns = h('div', {'class': 'library-source-columns'});
+    var wikiPanel = h('section', null, h('h4', null, 'Wiki pages'), h('label', null, 'Choose a Markdown folder', wiki));
+    var query = libraryWords();
+    var found = localShelf.pages.filter(function (page) { return query.every(function (word) { return page.path.toLowerCase().includes(word); }); });
+    wikiPanel.appendChild(h('p', {'class': 'hint', role: 'status'}, localShelf.folderSelected ? F.count(found.length) + ' matching / ' + countText(localShelf.pages.length, 'page') : 'No folder connected.'));
+    if (found.length) {
+      var groups = new Map();
+      found.forEach(function (page, index) {
+        var separator = page.path.lastIndexOf('/');
+        var folder = separator < 0 ? '.' : page.path.slice(0, separator);
+        if (!groups.has(folder)) { groups.set(folder, {count: 0, visible: []}); }
+        var group = groups.get(folder); group.count++;
+        if (index < localShelf.limit) { group.visible.push(page); }
+      });
+      groups.forEach(function (group, folder) {
+        if (!group.visible.length) { return; }
+        wikiPanel.appendChild(h('h5', {'data-wiki-folder': folder}, folder + ' · ' + group.visible.length + ' / ' + countText(group.count, 'matching page')));
+        var list = h('ul', {'class': 'library-local-list'});
+        group.visible.forEach(function (page) {
+          var open = h('button', {type: 'button', 'class': 'link', title: page.path, 'aria-expanded': String(localShelf.page === page)}, page.file.name);
+          on(open, 'click', async function () {
+            if (localShelf.page === page) { localShelf.page = null; redrawLocalShelf(); return; }
+            localShelf.page = page; localShelf.excerpt = 'Reading page…'; redrawLocalShelf();
+            try {
+              var result = await page.file.slice(0, 65536).text();
+              if (localShelf.page !== page) { return; }
+              localShelf.excerpt = result + (page.file.size > 65536 ? '\n[First 64 KiB shown]' : '');
+            } catch (_) { if (localShelf.page !== page) { return; } localShelf.excerpt = 'Page unavailable.'; }
+            redrawLocalShelf();
+          });
+          list.appendChild(h('li', null, open, localShelf.page === page ? h('pre', {tabindex: 0, 'data-local-preview': ''}, localShelf.excerpt || 'Empty file') : null));
+        });
+        wikiPanel.appendChild(list);
+      });
+      if (found.length > localShelf.limit) { wikiPanel.appendChild(on(h('button', {type: 'button', 'class': 'quiet'}, 'Show more pages'), 'click', function () { localShelf.limit += 24; redrawLocalShelf(); })); }
+    }
+    var mcpPanel = h('section', null, h('h4', null, 'MCP tools and servers'), h('label', null, 'Choose a server config or tools/list export', config),
+      h('p', {'class': 'hint', role: 'status'}, localShelf.servers ? localShelf.config + ' / ' + countText(localShelf.servers.length, 'configured server') : localShelf.tools ? localShelf.config + ' / ' + countText(localShelf.tools.length, 'listed tool') : localShelf.config || 'No configuration connected.'));
+    if (localShelf.servers) {
+      var matches = localShelf.servers.filter(function (name) { return query.every(function (w) { return name.toLowerCase().includes(w); }); });
+      mcpPanel.appendChild(h('ul', {'class': 'library-local-list'}, ...matches.map(function (name) { return h('li', null, name); })));
+    }
+    if (localShelf.tools) {
+      var definitions = localShelf.tools.filter(function (tool) { return query.every(function (word) { return [tool.name].concat(tool.fields).join(' ').toLowerCase().includes(word); }); });
+      mcpPanel.appendChild(h('dl', {'class': 'library-tool-schema'}, ...definitions.flatMap(function (tool) {
+        return [h('dt', null, tool.name), h('dd', null, tool.fields.join(', ') || 'No named parameters')];
+      })));
+    }
+    if (localShelf.folderSelected || localShelf.config || localShelf.lessonFile) {
+      panel.appendChild(on(h('button', {type: 'button', 'class': 'quiet'}, 'Disconnect reference files'), 'click', function () {
+        lessonRead++; localShelf.lessons = null; localShelf.lessonFile = '';
+        configRead++; localShelf.tools = null; localShelf.servers = null; localShelf.config = ''; localShelf.pages = [];
+        localShelf.folderSelected = false; localShelf.page = null; localShelf.excerpt = ''; redrawLocalShelf();
+        var pickers = $('library-reading'); if (pickers) { pickers.querySelectorAll('input').forEach(function (picker) { picker.value = ''; }); }
+      }));
+    }
+    columns.appendChild(wikiPanel); columns.appendChild(mcpPanel); columns.appendChild(lessonIndex(query));
+    panel.appendChild(columns); return panel;
+  }
+  function libraryWords() { return S.libQuery.toLowerCase().match(/\S+/g) || []; }
+  function libraryCatalog(doc) {
+    var panel = h('section', {id: 'library-catalog', 'class': 'library-source-panel', tabindex: -1}, h('h3', null, 'Shared skill registry'));
+    if (!doc || doc.registry_status !== 'ready') {
+      panel.appendChild(h('p', {'class': 'hint'}, doc && doc.registry_status === 'unconfigured' ? 'Not configured. Local kept skills are listed in the collection.' : 'Registry unavailable.')); return panel;
+    }
+    var words = libraryWords();
+    var items = doc.skills.filter(function (sk) {
+      return sk.source === 'registry' && words.every(function (w) { return [sk.title, sk.source_id, sk.domain, sk.category, sk.status].join(' ').toLowerCase().includes(w); });
+    });
+    var list = h('ul', {'class': 'library-catalog-list'});
+    items.forEach(function (sk) { list.appendChild(h('li', {'data-catalog-item': sk.id}, h('strong', null, sk.title), h('small', null, [sk.domain, sk.category, sk.status, sk.version ? 'v' + sk.version : ''].filter(Boolean).join(' / ')), h('code', null, sk.source_id))); });
+    panel.appendChild(items.length ? list : h('p', {'class': 'hint'}, words.length ? 'No matching registry skills.' : 'The connected registry contains no skills.'));
+    return panel;
+  }
   function renderLibrary(efficiency) {
     S.efficiency = efficiency;
-    if (!changed('library-list', [S.library, efficiency, S.filter, S.libQuery, S.libTag, S.libSort, S.decisions, libraryDay()])) { return; }
-    var chips = h('div', {'class': 'library-filters', 'aria-label': 'Library kinds'});
+    if (!changed('library-list', [S.library, efficiency, S.libEvidence, localShelf.revision, S.team && [S.team.run, S.team.files], selectedEvidenceRun(), S.history && S.history.runs, S.filter, S.libQuery, S.libTag, S.libSort, S.decisions, libraryDay()])) { return; }
+    var chips = h('div', {'class': 'library-filters', role: 'group', 'aria-label': 'Library kinds'});
     ['all', 'skill', 'artifact', 'workflow', 'lesson'].forEach(function (kind) {
       var count = kind === 'all' ? Object.keys(S.library.counts).reduce(function (n, key) { return n + S.library.counts[key]; }, 0) : S.library.counts[kind] || 0;
       var chip = h('button', {type: 'button', 'class': 'quiet', 'data-lib-filter': kind, 'aria-pressed': String(S.filter === kind)}, stateLabel(kind), ' ', count);
       on(chip, 'click', function () { S.filter = kind; renderLibrary(efficiency); }); chips.appendChild(chip);
     });
-    var search = h('input', {type: 'search', 'data-lib-search': '', value: S.libQuery, placeholder: 'Search title, tags and text'}), sort = h('select', {'data-lib-sort': ''});
+    var search = h('input', {type: 'search', 'data-lib-search': '', value: S.libQuery, placeholder: 'Search titles, tags, orders and files', 'aria-keyshortcuts': '/'}), sort = h('select', {'data-lib-sort': ''});
     [['newest', 'Newest'], ['used', 'Most used']].forEach(function (p) { sort.appendChild(h('option', {value: p[0], selected: S.libSort === p[0]}, p[1])); });
     on(search, 'input', function (ev) { S.libQuery = ev.currentTarget.value; renderLibrary(efficiency); });
     on(sort, 'change', function (ev) { S.libSort = ev.currentTarget.value; renderLibrary(efficiency); });
@@ -28664,31 +28926,77 @@ import * as F from './format.mjs';
       var chip = h('button', {type: 'button', 'class': 'quiet', 'data-lib-tag': tag, 'aria-pressed': String(S.libTag === tag)}, tag || 'All tags');
       on(chip, 'click', function () { S.libTag = tag; renderLibrary(efficiency); }); tags.appendChild(chip);
     });
-    var entries = S.library.entries.filter(function (e) { return (S.filter === 'all' || e.kind === S.filter) && (!S.libTag || (e.tags || []).indexOf(S.libTag) >= 0) && [entryTitle(e), e.title, (e.tags || []).join(' '), e.search_text || e.text || ''].join(' ').toLowerCase().indexOf(S.libQuery.trim().toLowerCase()) >= 0; });
+    var queryWords = libraryWords();
+    function matchesEntry(e) {
+      var source = e.source || {};
+      var text = [entryTitle(e), e.title, e.kind, e.status, e.by, e.source_title, source.order, source.run,
+        source.path, (e.tags || []).join(' '), e.search_text || e.text || ''].join(' ').toLowerCase();
+      return queryWords.every(function (word) { return text.includes(word); });
+    }
+    var entries = S.library.entries.filter(function (e) { return (S.filter === 'all' || e.kind === S.filter) && (!S.libTag || (e.tags || []).indexOf(S.libTag) >= 0) && matchesEntry(e); });
     entries.sort(function (a, b) { return (S.libSort === 'used' ? b.used - a.used : 0) || b.at.localeCompare(a.at); });
     var inUse = entries.filter(currentEntry), proposed = visibleProposals(entries), rest = entries.filter(function (e) { return !currentEntry(e) && e.status !== 'proposed' && !S.decisions[e.id]; });
     var uses = entries.reduce(function (n, e) { return n + e.used; }, 0);
-    var content = [h('div', {'class': 'page-head'}, h('div', null, h('p', {'class': 'eyebrow'}, 'Keep what works. Learn from each order.'), h('h2', null, 'Library'))), h('div', {'class': 'stats view-stats'}, ...summaryStats('library', [['entries', 'In use', inUse.length, 'Current accepted entries', 'library'], ['review', 'Waiting for you', entries.filter(function (e) { return e.status === 'proposed'; }).length, 'Proposals to decide', 'attention'], ['uses', 'Uses', uses, 'Across the visible entries', 'activity']])),
-      h('div', {'class': 'library-tools', 'data-key': 'library-tools'}, h('label', null, 'Search the Library', search), h('label', null, 'Sort by', sort)), chips, tags];
-    function shelf(name, key, count, body) { return h('section', {'data-library-section': key, 'data-section-count': count}, h('h3', {'class': 'section-heading'}, name, h('span', {'class': 'section-count'}, count)), body); }
+    var latest = entries.reduce(function (best, item) { return !best || item.at > best.at ? item : best; }, null);
+    var overview = h('header', {'data-hero': '', 'class': 'library-overview'},
+      h('div', {'class': 'page-head'}, h('div', null, h('h2', null, 'Library'),
+        latest ? h('p', {'class': 'library-recent'}, 'Latest ', h('time', {datetime: latest.at}, wallDate(Date.parse(latest.at) / 1000)), ' / ', stateLabel(latest.kind)) : null),
+        latest ? attrs(libLink(latest.id, entryTitle(latest)), {'class': 'library-primary', 'aria-label': 'Open latest record: ' + entryTitle(latest)}) : h('a', {href: '#/files', 'class': 'library-primary'}, 'Browse hand-ins')),
+      h('div', {'class': 'stats view-stats'}, ...summaryStats('library', [
+        ['records', 'Records', entries.length, 'Across matching versions', 'results'],
+        ['entries', 'In use', inUse.length, 'Current accepted entries', 'library'],
+        ['review', 'Waiting for you', entries.filter(function (e) { return e.status === 'proposed'; }).length, 'Proposals to decide', 'attention'],
+        ['uses', 'Uses', uses, 'Across the visible entries', 'activity']])));
+    var clear = h('button', {type: 'button', 'class': 'quiet', 'data-lib-clear': ''}, 'Clear filters');
+    function resetLibrarySearch() {
+      S.filter = 'all'; S.libQuery = ''; S.libTag = '';
+      var field = document.querySelector('[data-lib-search]');
+      if (field) { field.value = ''; }
+      renderLibrary(efficiency); document.querySelector('[data-lib-search]').focus();
+    }
+    on(clear, 'click', resetLibrarySearch);
+    on(search, 'keydown', function (ev) {
+      if (ev.key === 'Escape' && (S.libQuery || S.libTag || S.filter !== 'all')) {
+        ev.stopPropagation(); resetLibrarySearch(); ev.preventDefault();
+      }
+    });
+    var active = S.libTag || queryWords.length || S.filter !== 'all';
+    var content = [overview, h('nav', {'class': 'library-jumps', 'data-lib-nav': '', 'aria-label': 'Library sections'},
+      libraryPosition('Collection', 'library-collection'), h('details', {'data-key': 'source-jumps'}, h('summary', null, 'Jump to a source'),
+        libraryPosition('Hand-ins', 'library-handins'), libraryPosition('Skill evidence', 'library-evidence'),
+        libraryPosition('Registry', 'library-catalog'), libraryPosition('Reference sources', 'library-reading'))),
+      h('div', {id: 'library-collection', tabindex: -1, 'class': 'library-discovery', 'data-key': 'discovery'},
+      h('div', {'class': 'library-tools'}, h('label', null, 'Search the Library', search), h('label', null, 'Sort by', sort)),
+      chips, tags.children.length > 1 ? tags : null, active ? h('div', {'class': 'library-found'}, h('span', {role: 'status'}, countText(entries.length, 'matching record')), clear) : null)];
+    function shelf(name, key, count, body) {
+      return h('section', {'data-key': 'shelf-' + key, 'data-library-section': key, 'data-section-count': count},
+        h('h3', {'class': 'section-heading'}, name, h('span', {'class': 'section-count'}, count)), body);
+    }
     if (entries.length) {
-      content.push(shelf('In use', 'in-use', inUse.length, inUse.length ? h('div', {'class': 'library-grid'}, ...inUse.map(libraryCard)) : empty('No current entries yet.', 'Keep a useful file or accept a proposal for the team to reuse.', 'books')));
-      content.push(shelf('Waiting for you', 'waiting', entries.filter(function (e) { return e.status === 'proposed'; }).length, proposed.length ? h('div', {'class': 'library-grid proposal-grid'}, ...proposed.map(proposalCard)) : empty('No proposals to decide.', 'New suggestions from the lead will appear here.', 'proposal')));
-      content.push(shelf('History', 'history', rest.length, rest.length ? libraryHistory(rest) : empty('No earlier records yet.', 'Previous versions and recorded lessons stay here.', 'books')));
+      var waiting = entries.filter(function (entry) { return entry.status === 'proposed'; }).length;
+      var shelves = [
+        shelf('In use', 'in-use', inUse.length, inUse.length ? h('div', {'class': 'library-grid'}, ...inUse.map(libraryCard)) : null),
+        shelf('Waiting for you', 'waiting', waiting, proposed.length ? h('div', {'class': 'library-grid proposal-grid'}, ...proposed.map(proposalCard)) : null),
+        shelf('History', 'history', rest.length, rest.length ? libraryHistory(rest) : null)];
+      var quietShelves = h('div', {'class': 'library-quiet-shelves'});
+      shelves.forEach(function (node) {
+        if (node.children.length > 1) { content.push(node); }
+        else { quietShelves.appendChild(node); }
+      });
+      if (quietShelves.children.length) { content.push(quietShelves); }
     }
     if (!entries.length) {
-      var noMatch = S.library.entries.length > 0, clear = h('button', {type: 'button', 'class': 'quiet', 'data-lib-clear': ''}, 'Clear filters');
-      on(clear, 'click', function () { S.filter = 'all'; S.libQuery = ''; S.libTag = ''; document.querySelector('[data-lib-search]').value = ''; renderLibrary(efficiency); });
-      content.push(section('A place for useful work', h('div', null, empty(noMatch ? 'No matching entries.' : 'Nothing kept here yet.', noMatch ? 'Try another title, tag or phrase, or clear the filters.' : 'Open a finished order and keep a file as a skill or reference. Workflows and lessons appear automatically.', 'books'), noMatch ? clear : null)));
+      var noMatch = S.library.entries.length > 0;
+      content.push(section('A place for useful work', h('div', null, empty(noMatch ? 'No matching entries.' : 'Nothing kept here yet.', noMatch ? 'Try another title, tag or phrase, or clear the filters.' : 'Open a finished order and keep a file as a skill or reference. Workflows and lessons appear automatically.', 'books'))));
     }
-    content.push(efficiencyView(efficiency.orders)); fill($('library-content'), content);
+    content.push(libraryHandIns(), libraryEvidence(S.libEvidence), libraryCatalog(S.libEvidence), libraryReadingRoom(), efficiency ? efficiencyView(efficiency.orders) : section('What each order cost', h('p', {role: 'status'}, 'Order costs unavailable.'))); fill($('library-content'), content);
   }
   function refreshLibrary() {
     return get('/library').then(function (doc) { S.library = doc; drawTop(); if (S.view === 'home') { drawHome(); } if (S.view === 'library') { return loadLibrary(); } });
   }
   function redrawDecisions() {
     if (S.view === 'home') { drawHome(); }
-    else if (S.view === 'library') { if (S.route[1] && S.entryDetail) { renderEntry(S.entryDetail); } else if (S.efficiency) { renderLibrary(S.efficiency); } }
+    else if (S.view === 'library') { if (S.route[1] && S.entryDetail) { renderEntry(S.entryDetail); } else if (S.library) { renderLibrary(S.efficiency); } }
   }
   function reviewEntry(entry, decision, box) {
     if (S.reviewing) { return; }
@@ -28766,6 +29074,14 @@ import * as F from './format.mjs';
     var compare = h('button', {type: 'button', 'class': 'quiet', 'data-compare-versions': '', disabled: (entry.versions || [entry]).length < 2, title: 'Compare two recorded versions of this entry.'}, 'Compare versions'); on(compare, 'click', function () { openComparison(); });
     box.appendChild(h('div', {'class': 'page-head entry-header'}, h('div', null, h('div', {'class': 'library-meta'}, kindChip(entry.kind), versionChip(entry), badge(entry.status)), h('h2', null, entryTitle(entry))), h('div', {'class': 'entry-actions'}, use, compare, h('a', {href: '#/library'}, 'Back to Library'))));
     box.appendChild(h('div', {'class': 'entry-origin hint'}, h('span', null, 'Source order: ', entrySource(entry)), h('time', {datetime: entry.at, title: entry.at}, when(entry.at)), h('span', {'data-lib-used': ''}, countText(entry.used, 'use')), h('code', {'class': 'entry-path', title: entry.source.path}, entry.source.path)));
+    var sourceDay = S.history && Object.keys(S.history.days || {}).find(function (day) {
+      return (S.history.days[day].orders || []).some(function (order) { return order.run === entry.source.run &&
+        (order.id === entry.source.order || (order.steps || []).some(function (step) { return step.id === entry.source.order; })); });
+    });
+    var trace = h('section', {'class': 'library-lineage'}, h('h3', null, 'Record provenance'),
+      h('p', null, h('time', {datetime: entry.at}, entry.at), ' / ', entry.by || 'Author unavailable'),
+      h('p', null, 'Run ', h('code', null, entry.source.run)), sourceDay ? h('a', {href: '#/day/' + sourceDay}, 'Open source day ' + sourceDay) : null);
+    box.appendChild(trace);
     if (entry.replaces) { box.appendChild(h('p', {'data-lib-replaces': '', 'class': 'hint'}, 'Replaces ', libLink(entry.replaces, 'Version ' + F.count(Math.max(1, entry.version - 1))))); }
     var usage = entry.usage || [];
     box.appendChild(h('div', {'class': 'stats view-stats entry-stats'}, ...summaryStats('entry', [['version', 'Version', entry.version, 'This entry', 'library'], ['uses', 'Uses', entry.used, 'Plans naming this version', 'activity'], ['first', 'Accepted first time', usage.filter(function (o) { return o.outcome === 'accepted' && !o.sent_back; }).length, 'Orders using this version', 'results'], ['returned', 'Sent back', usage.filter(function (o) { return o.sent_back > 0; }).length, 'Orders returned for revision', 'attention']])));
@@ -28843,10 +29159,15 @@ import * as F from './format.mjs';
     if (S.route[1] === 'keep' && S.route.length > 2) { return loadKeep(); }
     if (S.reviewing) { return Promise.resolve(); }
     var id = S.route[1], request = ++S.libraryRequest;
-    return Promise.all([get('/library'), id ? Promise.resolve(null) : get('/library/efficiency')]).then(function (results) {
-      if (S.view !== 'library' || request !== S.libraryRequest || S.route[1] !== id) { return; }
-      S.library = results[0];
-      if (!id) { renderLibrary(results[1]); return; }
+    function current() { return S.view === 'library' && request === S.libraryRequest && S.route[1] === id; }
+    var supplements = id ? null : Promise.all([get('/library/efficiency', 5000).catch(function () { return null; }), loadLibraryEvidence()]);
+    return get('/library').then(function (doc) {
+      if (!current()) { return; }
+      S.library = doc;
+      if (!id) {
+        renderLibrary(S.efficiency);
+        return supplements.then(function (data) { if (current()) { S.libEvidence = data[1]; renderLibrary(data[0]); } });
+      }
       if (!S.library.entries.some(function (e) { return e.id === id; })) {
         if (changed('library-missing', id)) { fill($('library-content'), [section('Library', h('div', null, empty('Choose something from your Library.', 'This entry is unavailable. Browse the Library for the work you want to keep using.'), h('a', {href: '#/library'}, 'Back to Library')))]); }
         return;
@@ -29058,7 +29379,7 @@ import * as F from './format.mjs';
         (view === 'order' && (!parts[1] || !parts[2]))) { view = 'home'; parts = []; }
     S.orderRequest++; S.libraryRequest++; S.view = view; S.route = parts; S.focusOrderFiles = view === 'order' && parts[3] === 'files'; S.focusOrderTree = view === 'order' && parts[3] === 'tree';
     document.documentElement.dataset.route = view;
-    var compact = ['board', 'files', 'ledger', 'swarms'].includes(view);
+    var compact = ['home', 'board', 'files', 'ledger', 'swarms', 'library'].includes(view);
     document.documentElement.dataset.layout = compact ? 'responsive' : 'desktop';
     var viewport = $('page-viewport'), width = compact ? 'width=device-width,initial-scale=1' : 'width=1280';
     if (viewport.getAttribute('content') !== width) { viewport.setAttribute('content', width); }
@@ -29073,7 +29394,7 @@ import * as F from './format.mjs';
       fill($('order-detail'), [orderView.getAttribute('data-state') === 'PENDING' ? badge('PENDING') : null, skeleton()]);
     }
     if (view === 'library') {
-      S.filter = 'all'; delete S.drawn['library-list']; delete S.drawn['library-detail']; delete S.drawn['library-missing']; delete S.drawn['library-keep'];
+      delete S.drawn['library-list']; delete S.drawn['library-detail']; delete S.drawn['library-missing']; delete S.drawn['library-keep'];
       fill($('library-content'), [skeleton()]);
     }
     if (view === 'swarms') { openSwarms(parts[1]); }
@@ -29285,6 +29606,10 @@ import * as F from './format.mjs';
     if (following && routeKeys[key]) {
       e.preventDefault(); window.location.hash = routeKeys[key] === 'home' ? '#/' : '#/' + routeKeys[key];
     } else if (key === 'g') { goKeyAt = Date.now(); }
+    else if (key === '/' && S.view === 'library' && !S.route[1]) {
+      var librarySearch = document.querySelector('[data-lib-search]');
+      if (librarySearch) { e.preventDefault(); librarySearch.focus(); }
+    }
     else if (key === 'l') { e.preventDefault(); window.location.hash = '#/library'; }
     else if (key === '?') { e.preventDefault(); window.location.hash = '#/help'; }
     else if (key === 'n') {
@@ -30426,6 +30751,70 @@ cat > 'web/look-home.css' <<'OC_EOF_96'
 :root[data-motion=reduce] body [data-view=home] *,
 :root[data-motion=reduce] body [data-view=home] *::before,
 :root[data-motion=reduce] body [data-view=home] *::after{animation:none !important;}
+
+/* Keep the order form and the route from Home to a kept entry usable at actual device width. */
+@media (max-width:900px){
+  :root[data-route=home] [data-view=home] :is(.home-row, .home-compose-row, .home-library-grid, .home-proposal-list){
+    grid-template-columns:var(--track);
+  }
+  :root[data-route=home] #home-team{
+    grid-template-columns:repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+  }
+  :root[data-route=home] [data-view=home] .home-compose-row #compose-form{
+    display:flex;
+    flex-flow:column;
+    align-items:stretch;
+  }
+  :root[data-route=home] [data-view=home] #compose-form > .actions{
+    align-self:stretch;
+    justify-content:flex-start;
+  }
+  :root[data-route=home] body [data-view=home]:not([hidden]) .home-entry{
+    min-height:44px;
+    grid-template-columns:auto var(--track);
+    align-items:center;
+  }
+  :root[data-route=home] .home-entry .hint{ grid-column:2; }
+  :root[data-route=home] [data-home-library] .block-head a{
+    display:inline-flex;
+    align-items:center;
+    min-block-size:44px;
+  }
+}
+@media (min-width:761px) and (max-width:900px){
+  :root[data-route=home] body{ grid-template-columns:140px var(--track); }
+}
+@media (max-width:760px){
+  :root[data-route=home] [data-view=home] .hero .page-head{
+    flex-flow:column;
+    align-items:start;
+  }
+  :root[data-route=home] [data-view=home] #hero-stats{
+    grid-template-columns:repeat(2, var(--track));
+  }
+  :root[data-route=home] [data-view=home] #hero-stats .stat{
+    grid-template-columns:var(--track);
+    padding:var(--space-2);
+    gap:var(--space-1);
+    min-height:0;
+  }
+  :root[data-route=home] #hero-stats .stat > [data-card-icon]{ display:none; }
+  :root[data-route=home] [data-view=home] #hero-stats .stat > *{ grid-area:auto; }
+  :root[data-route=home] :is(#compose-title, #compose-goal){ font-size:16px; }
+  :root[data-route=home] body [data-view=home]:not([hidden]) :is(#compose-title, #compose-submit),
+  :root[data-route=home] nav a[data-nav-to]{ min-height:44px; }
+  :root[data-route=home] [data-view=home] .week-day{ padding-inline:2px; }
+  :root[data-route=home] [data-view=home] :is(.home-file, .results-file){
+    display:flex;
+    flex-wrap:wrap;
+  }
+}
+@media (max-width:520px){
+  :root[data-route=home] #home-orders .order > .order-step-summary{
+    grid-column:1 / -1;
+    grid-row:auto;
+  }
+}
 OC_EOF_96
 cat > 'web/look-order.css' <<'OC_EOF_97'
 /* Order and Status: ui-foundation's four inks, paper surfaces and role scale.
@@ -30842,12 +31231,65 @@ cat > 'web/look-records.css' <<'OC_EOF_98'
 :root[data-motion=on] body main [data-view=library] .proposal-card[data-proposal-phase=leaving]{animation:records-leave 150ms ease;}
 :root[data-motion=reduce] body main :is([data-view=files], [data-view=ledger], [data-view=library], [data-view=board]) *{animation:none;}
 
+
+/* The same proposal can appear on the Home page, its shelf and its version detail. */
+:root body :is(#home-proposals, #library-content) [data-proposal-card]{
+  display:grid;
+  grid-template-columns:repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  align-items:start;
+  gap:var(--space-3);
+  padding:var(--space-4);
+  border-radius:var(--round-card);
+  font:400 13.5px/20px var(--font);
+  letter-spacing:normal;
+}
+:root :is(#home-proposals, #library-content) [data-proposal-card] :is(.proposal-intro, .proposal-changes, .proposal-body){
+  display:grid;
+  align-content:start;
+  gap:var(--space-2);
+}
+:root :is(#home-proposals, #library-content) [data-proposal-card] :is(h3, p){
+  margin:0;
+  line-height:20px;
+}
+:root :is(#home-proposals, #library-content) [data-proposal-card] h3{
+  font-size:13.5px;
+}
+:root :is(#home-proposals, #library-content) [data-proposal-card] h3 [data-card-icon]{
+  inline-size:20px;
+  block-size:20px;
+}
+:root :is(#home-proposals, #library-content) [data-proposal-card] :is(.hint, time, .library-meta, .diff-line){
+  font-size:12px;
+  line-height:20px;
+}
+:root :is(#home-proposals, #library-content) [data-proposal-card] .proposal-review{
+  margin-block-start:var(--space-2);
+}
+:root :is(#home-proposals, #library-content) [data-proposal-card] :is(.proposal-review button, .proposal-review summary){
+  padding:4px 8px;
+  min-block-size:36px;
+}
+:root :is(#home-proposals, #library-content) [data-proposal-card] :is(.kind-chip, .version-chip){
+  padding:1px 6px;
+  font-size:12px;
+  line-height:16px;
+}
+:root :is(#home-proposals, #library-content) [data-proposal-card] .kind-chip svg{
+  inline-size:12px;
+  block-size:12px;
+}
+:root :is(#home-proposals, #library-content) [data-proposal-card] .seat-icon{
+  max-inline-size:32px;
+  max-block-size:32px;
+}
+
 /* On phones keep the five board lanes and the complete receipt in reading order. */
 @media (max-width: 760px) {
-  html[data-layout=responsive] body:has([data-view=board]:not([hidden]), [data-view=ledger]:not([hidden]), [data-view=files]:not([hidden])) {
+  html[data-layout=responsive] body:has([data-view=board]:not([hidden]), [data-view=ledger]:not([hidden]), [data-view=files]:not([hidden]), [data-view=library]:not([hidden])) {
     grid-template: none / var(--track);
   }
-  html[data-layout=responsive] body:has([data-view=board]:not([hidden]), [data-view=ledger]:not([hidden]), [data-view=files]:not([hidden])) .workspace {
+  html[data-layout=responsive] body:has([data-view=board]:not([hidden]), [data-view=ledger]:not([hidden]), [data-view=files]:not([hidden]), [data-view=library]:not([hidden])) .workspace {
     margin: 0;
     padding: var(--space-3);
   }
@@ -30880,6 +31322,121 @@ cat > 'web/look-records.css' <<'OC_EOF_98'
     grid-template: none / auto auto var(--track);
   }
   html[data-layout=responsive] body main [data-view=ledger] .ledger-group .what { grid-column: var(--receipt-span); }
+}
+
+/* A single surface connects the collection to its measured totals. */
+#library-content .library-overview{
+  background:radial-gradient(ellipse at 72% -12%, #ee9aa4 4%, transparent 63%),
+    radial-gradient(ellipse at 15% 100%, #9ac2f1, transparent 52%),
+    linear-gradient(118deg, #faede3, #cfb5f0 59%, #d8edf0);
+  border-radius:var(--space-3);
+  padding:var(--space-4) var(--space-4) 28px;
+  margin-block-end:var(--space-5);
+}
+#library-content .library-overview .page-head{ margin-block:0 18px; }
+#library-content .library-overview h2{ font-size:clamp(26px, 2.6vw, 38px); letter-spacing:-.042em; line-height:1.1; }
+#library-content .library-overview .view-stats{ grid-template-columns:repeat(4, var(--track)); margin-block-end:0; }
+#library-content .library-overview .stat{ background-color:rgb(255 255 255 / .89); }
+#library-content .library-primary{
+  background-color:#263e74;
+  color:white;
+  font-weight:var(--weight-medium);
+  border-radius:9px;
+  padding:9px 15px;
+  text-decoration-line:none;
+}
+#library-content .library-primary:hover{ background-color:#385655; }
+#library-content .library-quiet-shelves{ display:flex; flex-wrap:wrap; column-gap:22px; margin-block:12px 20px; }
+#library-content .library-quiet-shelves h3{ font:inherit; color:var(--ink-3); margin:0; }
+#library-content .library-history-row{
+  background:var(--paper); box-shadow:var(--lift-1);
+  padding:16px 18px; grid-template-columns:minmax(13em,.9fr) minmax(0,1.3fr);
+}
+#library-content .history-name{ align-content:center; row-gap:5px; }
+#library-content .history-name > a{ font-size:1.04rem; font-weight:620; }
+#library-content .library-run-result{ color:var(--ink-3); font-variant-numeric:tabular-nums; }
+#library-content .library-discovery{ border-block-end:1px solid var(--line); padding-block-end:var(--space-2); }
+#library-content .library-tools{ display:grid; grid-template-columns:minmax(9em, 1fr) minmax(8em, 12em); }
+#library-content .library-found{ display:flex; align-items:baseline; gap:12px; font-size:.85rem; }
+#library-content .library-source-panel{ background-color:var(--paper); box-shadow:var(--lift-1); padding:18px; margin-block:14px; border-radius:12px; }
+#library-content .library-source-panel h3{ margin-block:0 8px; }
+#library-content .library-panel-head{ display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:12px; }
+#library-content .library-panel-head label{ font-size:.78rem; }
+#library-content .library-scroll{ overflow-x:auto; margin-block:8px 14px; }
+#library-content .library-scroll table{ inline-size:100%; text-align:start; border-collapse:collapse; }
+#library-content .library-scroll :is(th,td){ padding:8px 10px; text-align:start; border-block-end:1px solid var(--line); }
+#library-content .library-catalog-list{ padding-inline-start:0; list-style:none; display:grid; gap:8px; }
+#library-content .library-catalog-list li{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
+#library-content .library-jumps{ position:static; display:flex; flex-flow:row wrap; gap:4px; min-height:0; height:auto; margin-block:-3px 12px; padding:0; background:none; }
+#library-content .library-jumps button{ color:#345555; border-radius:6px; background-color:#eaf2ef; }
+#library-content .library-handins{ list-style:none; padding-inline:0; margin-block:0; }
+#library-content .library-handins li{ display:grid; grid-template-columns:1fr 1fr auto; align-items:center; padding-block:9px; gap:16px; }
+#library-content .library-handins :is(small,code){ display:block; color:var(--ink-3); overflow-wrap:anywhere; }
+#library-content .library-lineage{ background:#eef4f3; border-radius:10px; padding:12px 16px; margin-block:12px; }
+#library-content .library-lineage :is(h3,p){ margin-block:3px; }
+@media (max-width:900px){
+  html[data-route=library] .workspace{ min-inline-size:0; }
+  #library-content{ overflow-wrap:anywhere; }
+  #library-content :is(.library-history-row,.library-handins li,.entry-columns,.version-outcome-layout,.shelf-entry.card,.proposal-card,.library-catalog-list li){
+    grid-template-columns:var(--track);
+  }
+  #library-content :is(.shelf-entry.card,.proposal-card) > *{ grid-area:auto; }
+  #library-content .library-panel-head label{ min-width:0; max-inline-size:100%; }
+  #library-content :is(.library-panel-head select,.entry-path){ max-inline-size:100%; }
+  #library-content [data-efficiency]{ display:block; }
+  #library-content :is(.eff-table,.version-table){ display:block; overflow-x:auto; }
+  #library-content .entry-header{ align-items:start; flex-direction:column; }
+}
+@media (max-width:760px){
+  html[data-route=library] .workspace{ margin-inline:0; padding:12px; }
+  #library-content .library-overview{ padding:13px; }
+  #library-content :is(.library-overview .view-stats,.entry-stats){ grid-template-columns:repeat(2,var(--track)); gap:7px; }
+  #library-content .library-overview .stat{ padding:8px 10px; }
+  #library-content .library-overview .stat > [data-card-icon]{ display:none; }
+  #library-content .library-overview .page-head{ gap:7px; margin-block-end:12px; }
+  #library-content .library-tools{ grid-template-columns:var(--track) minmax(6em,.48fr); gap:8px; }
+  #library-content .library-tools label{ min-inline-size:0; }
+  #library-content :is(.library-tools input,.library-tools select,.library-jumps button,.library-filters button){ min-height:40px; }
+  #library-content .library-handins li{ row-gap:7px; }
+  #library-content .history-records{ grid-column:1; }
+  #library-content .library-panel-head{ display:grid; }
+  #library-content :is(.library-source-panel,.library-history-row){ padding:12px; }
+  #library-content .entry-stats .stat{ min-width:0; }
+}
+@media (min-width:761px) and (max-width:900px){
+  html[data-route=library] body:has(#library-content){ grid-template-columns:140px var(--track); }
+}
+@media (max-width:760px){
+  html[data-route=library] body:has(#library-content){ grid-template:auto 1fr / var(--track); }
+  html[data-route=library] body:has(#library-content) .workspace{ padding:10px; margin:0; }
+  html[data-route=library] .top .brand .eyebrow{ display:none; }
+  html[data-route=library] .top .meters{ flex-wrap:wrap; }
+  html[data-route=library] #status-chip{ white-space:normal; }
+  #library-content .library-overview .stat{ display:grid; grid-template-columns:var(--track) auto; gap:2px; }
+  #library-content .library-overview .stat > .stat-label{ grid-area:1 / 1; align-self:center; }
+  #library-content .library-overview [data-stat-value]{ grid-area:1 / 2; }
+  #library-content .library-overview [data-stat-note]{ grid-area:2 / 1 / auto / -1; }
+}
+#library-content .library-source-columns{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,16rem),1fr)); gap:16px; }
+#library-content .library-source-columns h4{ font-size:1rem; margin-block:8px; }
+#library-content .library-source-columns input{ min-inline-size:0; max-inline-size:100%; }
+#library-content .library-local-list{ padding-inline-start:17px; }
+#library-content .library-local-list button{ white-space:normal; text-align:start; }
+#library-content [data-local-preview]{ white-space:pre-wrap; max-block-size:20rem; overflow:auto; background-color:var(--well); padding:12px; }
+
+#library-content .library-recent{ color:#3c4753; margin-block:4px 0; }
+#library-content .library-primary{ max-inline-size:min(34ch,55%); }
+#library-content .library-jumps summary{ cursor:pointer; border-radius:6px; padding:6px 10px; }
+#library-content .library-jumps details[open]{ background:var(--well); border-radius:8px; }
+#library-content .history-name{ flex-wrap:wrap; justify-content:start; }
+#library-content .history-name .library-run-result{ flex-basis:100%; }
+@media (max-width:760px){
+  #library-content .library-overview [data-stat-note]{ display:none; }
+  #library-content .library-overview .stat{ min-height:44px; align-content:center; }
+  #library-content .library-primary{ padding:8px 11px; }
+  #library-content .library-jumps summary{ min-block-size:40px; align-content:center; }
+  html[data-route=library] .top .meters{ gap:4px; }
+  html[data-route=library] .top{ padding-block-end:6px; margin-block-end:10px; }
 }
 OC_EOF_98
 cat > 'web/look-team.css' <<'OC_EOF_99'
@@ -31097,7 +31654,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
  "criteria_sha256": "44159b4742b475ce35c3c9ed8dc29df84f33592cf52da9556bde4a5137704c6c",
  "instruments_sha256": "849c6dcfac1405f55e87137179065f43c804b5cd63d86a8cdf5118cbcb0de311",
  "fixture": "release-review-v1",
- "measured_at": "2026-11-23T17:36:34+00:00",
+ "measured_at": "2026-11-23T18:47:40+00:00",
  "versions": [
   {
    "id": "paid",
@@ -31111,9 +31668,9 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "id": "gpt",
    "name": "GPT-6.2",
    "color": "#005ea8",
-   "revision": "Runtime 604c12a76a06",
-   "runtime_sha256": "604c12a76a06db041d12245efbf1f95b300574ff8740f1b8b9af98122d03c9d2",
-   "captured": "2026-11-23T17:36:34+00:00"
+   "revision": "Runtime 2ecfe60effc0",
+   "runtime_sha256": "2ecfe60effc082a173d40390fbccbf707de634ae07cc27c2bdf851b5ae8e8bb1",
+   "captured": "2026-11-23T18:47:40+00:00"
   },
   {
    "id": "mine",
@@ -31306,8 +31863,8 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
     "gpt": {
      "total": 8,
      "measured": 8,
-     "passed": 4,
-     "score": 0.75
+     "passed": 5,
+     "score": 0.8125
     },
     "mine": {
      "total": 8,
@@ -31331,7 +31888,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "total": 8,
      "measured": 8,
      "passed": 6,
-     "score": 0.937625478517381
+     "score": 0.9354034078891813
     },
     "mine": {
      "total": 8,
@@ -31379,7 +31936,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "total": 9,
      "measured": 8,
      "passed": 5,
-     "score": 0.7708333333333334
+     "score": 0.8020833333333334
     },
     "mine": {
      "total": 9,
@@ -32636,7 +33193,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "passed": true,
      "score": 1,
      "evidence": {
-      "revision": "57e24d78a258009e94d37e689089bf80e87a9ae5",
+      "revision": "1faa97c1b5b6b6547f46b4ab624b5f84a896fc2b",
       "scanner": "privacy_scan",
       "scope": "reachable history"
      }
@@ -34377,16 +34934,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 1,
-     "passed": false,
-     "score": 0.5,
+     "value": 2,
+     "passed": true,
+     "score": 1,
      "evidence": {
       "fits": true,
-      "natural": false,
-      "viewport": 1280,
-      "width": 1280,
-      "device": false,
-      "scale": 0.3046875
+      "natural": true,
+      "viewport": 390,
+      "width": 390,
+      "device": true,
+      "scale": 1
      }
     },
     "mine": {
@@ -34784,16 +35341,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 43.799999713897705,
+     "value": 50.19999980926514,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       42.90000009536743,
-       45.19999980926514,
-       45.09999990463257,
-       43.69999980926514,
-       43.799999713897705
+       50.19999980926514,
+       47.799999713897705,
+       52.19999980926514,
+       46.0,
+       51.69999980926514
       ],
       "aggregate": "median",
       "cold": true
@@ -34844,16 +35401,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 16.0,
+     "value": 20.0,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       24.0,
        16.0,
        20.0,
+       20.0,
        16.0,
-       16.0
+       20.0
       ],
       "aggregate": "median",
       "cold": true
@@ -34904,16 +35461,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 801.4716796875,
+     "value": 833.1806640625,
      "passed": false,
-     "score": 0.6956073216029576,
+     "score": 0.6779125758579799,
      "evidence": {
       "samples": [
-       801.47265625,
-       801.47265625,
-       801.4716796875,
-       801.4716796875,
-       801.4716796875
+       833.1806640625,
+       833.1806640625,
+       833.1806640625,
+       833.1806640625,
+       833.1806640625
       ],
       "aggregate": "median",
       "cold": true
@@ -35017,16 +35574,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "reason": "No rendered link to a supported order detail API"
     },
     "gpt": {
-     "value": 67.7999997138977,
+     "value": 67.59999990463257,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       69.69999980926514,
-       66.90000009536743,
-       83.5,
-       65.80000019073486,
-       67.7999997138977
+       68.30000019073486,
+       67.59999990463257,
+       84.69999980926514,
+       65.10000038146973,
+       66.5
       ],
       "aggregate": "median"
      }
@@ -35068,16 +35625,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "reason": "No rendered link to a supported order detail API"
     },
     "gpt": {
-     "value": 83.5,
+     "value": 84.69999980926514,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       69.69999980926514,
-       66.90000009536743,
-       83.5,
-       65.80000019073486,
-       67.7999997138977
+       68.30000019073486,
+       67.59999990463257,
+       84.69999980926514,
+       65.10000038146973,
+       66.5
       ],
       "aggregate": "maximum"
      }
@@ -35121,12 +35678,12 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 31.352419215669105,
+     "value": 31.362237529343606,
      "passed": false,
-     "score": 0.8053965065360909,
+     "score": 0.80531468725547,
      "evidence": {
-      "seconds": 12.002599999904632,
-      "bytes": 385342,
+      "seconds": 12.003699999809266,
+      "bytes": 385498,
       "requests": 13,
       "repeat": true
      }
@@ -35166,12 +35723,12 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 1.083098661965182,
+     "value": 1.0829994085329162,
      "passed": true,
      "score": 1,
      "evidence": {
-      "seconds": 12.002599999904632,
-      "bytes": 385342,
+      "seconds": 12.003699999809266,
+      "bytes": 385498,
       "requests": 13,
       "repeat": true
      }
@@ -37114,21 +37671,21 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 0.5,
+     "value": 0.75,
      "passed": false,
-     "score": 0.5,
+     "score": 0.75,
      "evidence": {
       "items": [
        {
         "id": "phone.01",
         "name": "Home",
-        "got": false,
+        "got": true,
         "source": "mobile.home",
         "phone": {
          "deviceWidth": 390,
-         "pageWidth": 1280,
-         "viewport": 1280,
-         "scale": 0.3046875
+         "pageWidth": 390,
+         "viewport": 390,
+         "scale": 1
         }
        },
        {
@@ -37198,7 +37755,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
         "source": "No comparable probe"
        }
       ],
-      "yes": 2,
+      "yes": 3,
       "total": 9,
       "measured": 4
      }
@@ -37756,15 +38313,13 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
  "evolution": {
   "slot": "gpt",
   "improved": [
-   "mobile.board",
-   "mobile.files",
-   "mobile.ledger",
+   "mobile.home",
    "records.phone"
   ],
   "regressed": [],
   "passed": true,
-  "previous_revision": "0f7cbf8d4da9",
-  "previous_report_sha256": "3daaca1a9558a6df0c65952184e09109266d48ed6e7075f62dda21d5b193b57c",
+  "previous_revision": "Runtime 604c12a76a06",
+  "previous_report_sha256": "68e1283aa6cbceb24a678dfc3ca3372a6bdb2e5a382cd61419ef3de5b5ea27b3",
   "previous_values": {
    "correct.tests": 1.0,
    "correct.invariants": 13,
@@ -37823,21 +38378,21 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "action.month": 1,
    "action.group": 1,
    "mobile.home": 1,
-   "mobile.board": 1,
+   "mobile.board": 2,
    "mobile.team": 1,
    "mobile.calendar": 1,
    "mobile.status": 1,
-   "mobile.files": 1,
-   "mobile.ledger": 1,
+   "mobile.files": 2,
+   "mobile.ledger": 2,
    "mobile.swarms": 2,
-   "speed.home": 74.5,
-   "speed.paint": 20.0,
-   "speed.bytes": 798.8720703125,
+   "speed.home": 43.799999713897705,
+   "speed.paint": 16.0,
+   "speed.bytes": 801.4716796875,
    "speed.requests": 17.0,
-   "speed.order": 96.5,
-   "speed.tail": 109.7999997138977,
-   "speed.pollbytes": 31.383773009814877,
-   "speed.pollrate": 1.0830715910235618,
+   "speed.order": 67.7999997138977,
+   "speed.tail": 83.5,
+   "speed.pollbytes": 31.352419215669105,
+   "speed.pollrate": 1.083098661965182,
    "robust.offline": 1,
    "robust.stale": 1,
    "robust.overlap": 1,
@@ -37854,7 +38409,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "records.onb": 1.0,
    "records.tree": 1.0,
    "records.audit": 1.0,
-   "records.phone": 0.0,
+   "records.phone": 0.5,
    "verify.mutants": 1.0,
    "verify.ledger": 1.0,
    "verify.numbers": 1,
@@ -39749,7 +40304,7 @@ e5f65a07bf3e9d03ec5fb039b43131128b00799cc9e7e748858a48a4179db521 tests/format/sp
 f1e5b71a65e07c1543f4cd94912d1b4b570c03f900915e184cccbbb6d48f3307 tests/page_closing_audit.js
 1e65ea51d2007249987209966d57b51914de409b68dcf868b4fff974a8a4e52c tests/page_geometry.js
 931dd3784a3573e82fa1db1b8fcad02f99a2f5ab517df20ac8b031928c416918 tests/page_graph_checks.js
-6904a3a55af7211699c30d9a8926d89d3d6956570a9e011deb3400e2eeac1a33 tests/page_harness.js
+5e5ea45cfb8c1d09cd289ac96d5dc2ddcce84c279266a5099ba9b516fc831947 tests/page_harness.js
 0e652baf84648da4b6f303b2108477db82c0505ca79914ef9a6b5d1a29acb07d tests/page_home_regressions.js
 7417f2d3ae672f622ee3c03c6b07cc59f3393a6d92ee9b28583d3c58f29e7df6 tests/page_ink_system.js
 280caa764155fd91977c4b5a551004ae074983873851f043bd95b97ffc6a6617 tests/page_library_loop.js
@@ -39796,18 +40351,18 @@ edabc8ce7d7bf61d4ecd36c6af60f1f2b85aa7a8a1e1c16c8e4402dc80f8adb3 tools/quality_b
 299dbc95507d6d081c4b188a7841bdc228a37aec4f193d1de235945087256a77 tools/quality_policy.json
 0bf27d88366d574fe48425f4b2db3b2549de673640d828c898d0f468f64c8e28 tools/quality_v1.sha256
 5d442c22213b545048fc260254cafc7eee73e3a67f8234ea0e861ab427f86209 web/app.css
-43e4e0f286850fba0689202c042ef39573299d2c8d0f21e33af43330f9e4bdcf web/app.js
+10197c26491b394c131268b4d62255669783cd5d17b75bb849bfe4cc11a01e57 web/app.js
 e9f6c686b67852bb6838dbfcaf06a64385cf6ed44f2d03f10d67b6b93cf509ed web/board.js
 2e92fab599f9800a766b350b27cc54d3aed14207c65dbede84465cb305252ea7 web/colour.css
 2219b6976077d91c736e260e16f223f406772bfbf78781923c231f85b1adbcde web/format.mjs
 af958d0b8fd32168a1d2db3a4450927cf3d20c1fd2eb4d0dc559f4d64820fc1b web/icons.js
 578c04e790f396c6055893d844cf453c55f2df5c3ba578a87f2df758ba92a002 web/index.html
 ce849c90bc8ec101c150eb0d16ae0385e003841c1d05aab61680bca6c988c46c web/look-calendar.css
-b9683dee17e348d338bd80379f92134d50e41df4554d69bb29143a4dd2df4f70 web/look-home.css
+2a1671cb7b216b0ab10471a15ea2f410a711486c020bcd96aa6ab4f4dce08975 web/look-home.css
 08335cf3398d9f78ec7d813a25e3fee1556fdbb80d30560dfdd93e4cffb33b2f web/look-order.css
-91708995b3afa41c95265bad97ae9da11ecace14c5407f58f2666bfae1fc9579 web/look-records.css
+e5396fa4fbd3645f0bd28ab175c3abc99c334436c0a2a881165ebf452ccd167e web/look-records.css
 e0fe3cd4ea4d8fe1c3c8f1ea24aa92a2bdae9f2558c35b43fe0b357141e819ab web/look-team.css
-fc599d25c535625de0754cdaabc6cf8dba095f79b6ed7e3489fc8549dd7bd873 web/quality-data.json
+fbc58aa649984d43e801e3a578d565939c96b507d4fcd4b2ae2438108ca6b82d web/quality-data.json
 2f48c86410f410a49509f82dd55defe7999f0ae4b586a8af3b76a9ea24cdf3b0 web/quality.css
 9f6274322ba2642e9eeaebe3751e9dd013e8700f720e73571755f621e9c82db9 web/quality.html
 4dbbba02c54ee09eeed687b4030f8c80ae72e0948b0df2efa1d14a3deb5c6383 web/quality.js
