@@ -28510,115 +28510,360 @@ cat > 'web/status.js' <<'OC_EOF_91'
 OC_EOF_91
 cat > 'web/swarm.css' <<'OC_EOF_92'
 .sw-workspace {
+  box-sizing: border-box;
   --sw-ink: var(--ink, var(--aui-ink, #24262d));
   --sw-muted: var(--ink-3, var(--aui-muted, #656a73));
   --sw-paper: var(--paper, var(--aui-surface, #fff));
-  --sw-edge: color-mix(in srgb, var(--sw-ink) 14%, transparent);
-  --sw-wash: color-mix(in srgb, var(--sw-ink) 4%, var(--sw-paper));
   --sw-link: var(--accent, var(--aui-blue, #265dab));
+  --sw-interpolation: in srgb;
+  --sw-medium: 500;
+  --sw-panel-radius: 8px;
+  --sw-edge: color-mix(var(--sw-interpolation), transparent, var(--sw-ink) 14%);
+  --sw-wash: color-mix(var(--sw-interpolation), var(--sw-paper), var(--sw-ink) 4%);
   --sw-shadow: var(--shadow-small, var(--aui-shadow-card, 0 2px 8px #1b254111));
-  display: grid; min-width: 0; gap: 14px; align-content: start;
-  color: var(--sw-ink); font-size: 13px; line-height: 1.5;
+  --sw-rule: 1px solid var(--sw-edge);
+  --sw-track: minmax(0, 1fr);
+  --sw-section-gap: 14px;
+  --sw-caption: 12px;
+  --sw-fine: 11.5px;
+  --sw-numerals: tabular-nums;
+  --sw-gutter: 10px;
+
+  gap: var(--sw-section-gap);
+  align-content: start;
+  color: var(--sw-ink);
+  display: grid;
+  font-size: 13px;
+  min-inline-size: 0;
+  line-height: 1.5;
 }
-.sw-workspace *, .sw-workspace *::before, .sw-workspace *::after { box-sizing: border-box; }
-.sw-workspace [hidden], .sw-workspace .sw-message:empty, .sw-workspace .sw-error:empty { display: none; }
-.sw-workspace :is(h3,h4,p,ul,ol) { margin: 0; }
-.sw-workspace h3 { color: inherit; font-size: 17px; line-height: 1.35; font-weight: 600; letter-spacing: -.01em; }
-.sw-workspace h4 { color: var(--sw-muted); margin: 15px 0 7px; font-size: 12px; font-weight: 600; }
-.sw-workspace a, .sw-workspace .sw-text-button { color: var(--sw-link); text-decoration: none; font-weight: 500; }
-.sw-workspace a:hover, .sw-workspace .sw-text-button:hover { text-decoration: underline; }
-.sw-workspace :is(button, input, select, textarea, a):focus-visible { outline: 2px solid var(--sw-link); outline-offset: 2px; }
+
+.sw-workspace *,
+.sw-workspace *::before,
+.sw-workspace *::after { box-sizing: inherit; }
+.sw-workspace :is([hidden], .sw-message:empty, .sw-error:empty) { display: none; }
+.sw-workspace :is(h3, h4, p, ul, ol) { margin: 0; }
+
+.sw-workspace h3 {
+  letter-spacing: -.01em;
+  font-size: 17px;
+  color: inherit;
+  line-height: 1.35;
+  font-weight: 600;
+}
+.sw-workspace h4 {
+  margin-block: 15px 7px;
+  font-size: var(--sw-caption);
+  color: var(--sw-muted);
+  font-weight: 600;
+}
+.sw-workspace :is(a, .sw-text-button) {
+  font-weight: var(--sw-medium);
+  text-decoration-line: none;
+  color: var(--sw-link);
+}
+.sw-workspace :is(a, .sw-text-button):hover { text-decoration-line: underline; }
+.sw-workspace :focus-visible:is(a, button, input, select, textarea) {
+  outline: solid 2px var(--sw-link);
+  outline-offset: 2px;
+}
 .sw-workspace button { cursor: pointer; }
-.sw-workspace button:disabled { opacity: .6; cursor: wait; }
-.sw-workspace small, .sw-workspace .sw-hint, .sw-workspace .sw-run { color: var(--sw-muted); font-size: 12px; }
-.sw-workspace .sw-run { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.sw-workspace .sw-layout { display: grid; grid-template-columns: minmax(175px, .8fr) minmax(0, 2.2fr); align-items: start; gap: 14px; }
-.sw-workspace .sw-stack { display: grid; gap: 14px; min-width: 0; }
-.sw-workspace .sw-card { background: var(--sw-paper); color: var(--sw-ink); border-radius: 14px; box-shadow: var(--sw-shadow); border: 1px solid var(--sw-edge); min-width: 0; padding: 17px 19px; overflow-wrap: anywhere; }
-.sw-workspace .sw-heading, .sw-workspace .sw-actions, .sw-workspace .sw-error { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.sw-workspace .sw-heading { margin: 0 0 12px; }
-.sw-workspace .sw-actions { justify-content: flex-start; }
-.sw-workspace .sw-button, .sw-workspace .sw-group { background: var(--sw-paper); border: 1px solid var(--sw-edge); border-radius: 8px; box-shadow: none; color: var(--sw-ink); font: inherit; line-height: 1.35; padding: 7px 11px; min-height: 32px; }
-.sw-workspace .sw-button:hover, .sw-workspace .sw-group:hover { background: var(--sw-wash); }
-.sw-workspace .sw-primary { background: var(--sw-ink); border-color: var(--sw-ink); color: var(--sw-paper); font-weight: 500; }
-.sw-workspace .sw-primary:hover { background: color-mix(in srgb, var(--sw-ink) 91%, var(--sw-paper)); }
-.sw-workspace .sw-groups { display: grid; gap: 5px; }
-.sw-workspace .sw-group { display: grid; gap: 3px; text-align: start; overflow-wrap: anywhere; font-weight: 500; padding: 9px 10px; border-color: transparent; }
-.sw-workspace .sw-group[aria-pressed=true] { background: var(--sw-wash); border-color: var(--sw-edge); box-shadow: inset 3px 0 var(--sw-link); }
-.sw-workspace .sw-goal, .sw-workspace .sw-notes p { white-space: pre-wrap; }
-.sw-workspace .sw-roster, .sw-workspace .sw-tags, .sw-workspace .sw-related { display: flex; flex-wrap: wrap; gap: 5px 8px; align-items: center; }
-.sw-workspace .sw-seat { display: grid; gap: 2px; padding: 6px 10px; background: var(--sw-wash); border-radius: 7px; }
+.sw-workspace button:disabled { cursor: wait; opacity: .6; }
+.sw-workspace :is(small, .sw-hint, .sw-run) {
+  font-size: var(--sw-caption);
+  color: var(--sw-muted);
+}
+.sw-workspace :is(.sw-run, .sw-notes time) { font-variant-numeric: var(--sw-numerals); }
+.sw-workspace :is(.sw-run, .sw-card, .sw-group) { overflow-wrap: anywhere }
 .sw-workspace strong { font-weight: 550; }
-.sw-workspace .sw-task-list, .sw-workspace .sw-notes { padding: 0; list-style: none; }
-.sw-workspace .sw-task-list li { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 9px 0; border-top: 1px solid var(--sw-edge); }
-.sw-workspace .sw-task-caption { flex: 1 1 55%; display: grid; gap: 2px; }
-.sw-workspace .sw-state, .sw-workspace .sw-tags > * { background: var(--sw-wash); border-radius: 5px; padding: 2px 6px; font-size: 11.5px; }
-.sw-workspace .sw-state[data-state='LEASED'], .sw-workspace .sw-state[data-state='JUDGING'] { color: var(--run, var(--aui-blue, #3d679d)); }
-.sw-workspace .sw-state[data-state='SUCCEEDED'] { color: var(--ok, var(--aui-green, #426c4c)); }
-.sw-workspace .sw-state[data-state='FAILED'], .sw-workspace .sw-state[data-state='DEAD'] { color: var(--bad, var(--aui-red, #994a42)); }
-.sw-workspace .sw-task-skills { flex: 1 1 100%; display: grid; gap: 2px; font-size: 12px; color: var(--sw-muted); }
-.sw-workspace .sw-notes li { display: grid; gap: 5px; border-top: 1px solid var(--sw-edge); padding: 10px 0; }
-.sw-workspace .sw-notes time { font-size: 11.5px; color: var(--sw-muted); font-variant-numeric: tabular-nums; }
-.sw-workspace .sw-fields { padding: 0; margin: 0; border: 0; display: grid; min-width: 0; gap: 13px; }
-.sw-workspace .sw-field { display: grid; align-content: start; gap: 5px; font-size: 12px; font-weight: 500; color: var(--sw-ink); }
-.sw-workspace :is(input:not([type=checkbox]), select, textarea) { box-sizing: border-box; width: 100%; min-width: 0; margin: 0; padding: 7px 9px; border-radius: 7px; border: 1px solid var(--sw-edge); box-shadow: none; background: var(--sw-paper); color: var(--sw-ink); font: inherit; font-weight: 400; }
-.sw-workspace textarea { resize: vertical; }
-.sw-workspace .sw-columns, .sw-workspace .sw-note-refs, .sw-workspace .sw-search { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0,1fr)); }
-.sw-workspace .sw-note-refs { grid-template-columns: repeat(3, minmax(0,1fr)); }
-.sw-workspace .sw-search { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); margin-bottom: 8px; }
-.sw-workspace .sw-choices { border: 1px solid var(--sw-edge); min-width: 0; border-radius: 8px; margin: 0; padding: 4px 8px 8px; }
-.sw-workspace .sw-choices legend { font-size: 12px; font-weight: 500; padding: 0 3px; }
-.sw-workspace .sw-check-list { max-height: 175px; overflow-y: auto; padding: 2px; }
-.sw-workspace .sw-check { display: flex; align-items: flex-start; gap: 7px; padding: 4px 0; cursor: pointer; }
-.sw-workspace .sw-check input { display: inline-block; appearance: auto; width: 15px; height: 15px; margin: 3px 0 0; flex: none; }
-.sw-workspace .sw-choice-caption, .sw-workspace .sw-skill { display: grid; gap: 2px; min-width: 0; }
-.sw-workspace .sw-skills { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,215px),1fr)); gap: 8px; margin-top: 12px; }
-.sw-workspace .sw-skill { padding: 10px 12px; border: 1px solid var(--sw-edge); border-radius: 8px; align-content: start; }
-.sw-workspace .sw-origin { font-weight: 500; }
-.sw-workspace .sw-skill code { padding: 0; color: var(--sw-muted); font-size: 11px; background: transparent; }
-.sw-workspace .sw-related { margin-top: 4px; font-size: 12px; gap: 3px 6px; }
-.sw-workspace .sw-text-button { min-height: auto; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: transparent; font: inherit; }
-/* The public shell paints enabled buttons as primary actions. Keep that treatment on primary controls only. */
+
+/* Group navigation and detail cards share the same grid rhythm. */
+.sw-workspace :is(.sw-layout, .sw-stack, .sw-groups, .sw-group, .sw-seat,
+  .sw-task-caption, .sw-task-skills, .sw-notes li, .sw-fields, .sw-field,
+  .sw-columns, .sw-note-refs, .sw-search, .sw-choice-caption, .sw-skills, .sw-skill) {
+  display: grid;
+}
+.sw-workspace :is(.sw-stack, .sw-card, .sw-fields, .sw-choices, .sw-choice-caption, .sw-skill) {
+  min-inline-size: 0;
+}
+.sw-workspace :is(.sw-layout, .sw-stack) { gap: var(--sw-section-gap); }
+.sw-workspace .sw-layout {
+  grid-template: none / minmax(175px, .8fr) minmax(0, 2.2fr);
+  align-items: start;
+}
+.sw-workspace .sw-card {
+  padding: 17px 19px;
+  color: var(--sw-ink);
+  box-shadow: var(--sw-shadow);
+  background: var(--sw-paper);
+  border: var(--sw-rule);
+  border-radius: 14px;
+}
+.sw-workspace :is(.sw-heading, .sw-actions, .sw-error, .sw-roster, .sw-tags,
+  .sw-related, .sw-task-list li, .sw-check, .sw-post-meta) { display: flex; }
+.sw-workspace :is(.sw-heading, .sw-actions, .sw-error) {
+  gap: var(--sw-gutter);
+  align-items: center;
+}
+.sw-workspace :is(.sw-heading, .sw-error), .swarm-head-options { place-content: normal space-between; }
+.sw-workspace .sw-heading { margin-block-end: 12px; }
+.sw-workspace .sw-actions { justify-content: start; }
+
+.sw-workspace :is(.sw-button, .sw-group) {
+  min-block-size: 32px;
+  color: var(--sw-ink);
+  font: inherit;
+  padding: 7px 11px;
+  background: var(--sw-paper);
+  line-height: 1.35;
+  border: var(--sw-rule);
+  box-shadow: none;
+  border-radius: var(--sw-panel-radius);
+}
+.sw-workspace :hover:is(.sw-button, .sw-group, .sw-primary) {
+  background: none var(--sw-hover-surface, var(--sw-wash));
+}
+.sw-workspace .sw-primary {
+  --sw-hover-surface: color-mix(var(--sw-interpolation), var(--sw-paper), var(--sw-ink) 91%);
+  font-weight: var(--sw-medium);
+  color: var(--sw-paper);
+  border-color: var(--sw-ink);
+  background: var(--sw-ink);
+}
+.sw-workspace .sw-groups { gap: 5px; }
+.sw-workspace .sw-group {
+  text-align: start;
+  padding: 9px 10px;
+  font-weight: var(--sw-medium);
+  gap: 3px;
+  border-color: transparent;
+}
+.sw-workspace .sw-group[aria-pressed=true] {
+  box-shadow: inset 3px 0 var(--sw-link);
+  border-color: var(--sw-edge);
+  background: var(--sw-wash);
+}
+.sw-workspace :is(.sw-text-button, .sw-skill code) { background: none; }
+.sw-workspace .sw-text-button {
+  border-radius: 0;
+  font: inherit;
+  border: 0;
+  min-block-size: auto;
+  box-shadow: none;
+}
+
+/* The public shell gives its primary buttons a gradient. Group links and
+   secondary controls use their own surfaces in both resting and hover states. */
 #swarm-workspace :is(.sw-button:not(.sw-primary), .sw-group, .sw-text-button) {
   background-image: none;
   box-shadow: none;
 }
 #swarm-workspace .sw-group[aria-pressed=true] {
-  background-color: color-mix(in srgb, var(--sw-link) 9%, var(--sw-paper));
-  border-color: color-mix(in srgb, var(--sw-link) 32%, var(--sw-paper));
+  --sw-selected-fill: 9%;
+  border-color: color-mix(var(--sw-interpolation), var(--sw-paper), var(--sw-link) 32%);
+  background-color: color-mix(var(--sw-interpolation), var(--sw-paper), var(--sw-link) var(--sw-selected-fill));
   box-shadow: inset 3px 0 var(--sw-link);
 }
-#swarm-workspace .sw-group[aria-pressed=true]:hover {
-  background-color: color-mix(in srgb, var(--sw-link) 14%, var(--sw-paper));
+#swarm-workspace .sw-group[aria-pressed=true]:hover { --sw-selected-fill: 14%; }
+#swarm-workspace .sw-text-button { min-block-size: auto; }
+
+.sw-workspace :is(.sw-goal, .sw-notes p) { white-space: pre-wrap; }
+.sw-workspace :is(.sw-roster, .sw-tags, .sw-related, .sw-task-list li, .sw-post-meta) { flex-wrap: wrap; }
+.sw-workspace :is(.sw-roster, .sw-tags, .sw-related) {
+  gap: 5px 8px;
+  align-items: center;
 }
-#swarm-workspace .sw-text-button { min-height: auto; }
-.sw-workspace .sw-error { color: var(--bad, var(--aui-red, #994a42)); }
-.sw-workspace .sw-message { color: var(--ok, var(--aui-green, #426c4c)); }
+.sw-workspace :is(.sw-seat, .sw-task-caption, .sw-task-skills, .sw-choice-caption, .sw-skill) { gap: 2px; }
+.sw-workspace .sw-seat {
+  background: var(--sw-wash);
+  padding: 6px var(--sw-gutter);
+  border-radius: 7px;
+}
+.sw-workspace :is(.sw-task-list, .sw-notes) { list-style-type: none; }
+.sw-workspace :is(.sw-task-list, .sw-notes, .sw-text-button, .sw-skill code) { padding: 0; }
+.sw-workspace :is(.sw-task-list li, .sw-notes li) { border-block-start: var(--sw-rule); }
+.sw-workspace .sw-task-list li {
+  gap: 8px 12px;
+  padding-block: 9px;
+  align-items: center;
+}
+.sw-workspace .sw-task-caption { flex: 1 1 55%; }
+.sw-workspace :is(.sw-state, .sw-tags > *) {
+  padding: 2px 6px;
+  font-size: var(--sw-fine);
+  background: var(--sw-wash);
+  border-radius: 5px;
+}
+.sw-workspace .sw-state:is([data-state=LEASED], [data-state=JUDGING]) { color: var(--run, var(--aui-blue, #3d679d)); }
+.sw-workspace .sw-state[data-state=SUCCEEDED], .sw-workspace .sw-message { color: var(--ok, var(--aui-green, #426c4c)); }
+.sw-workspace .sw-state:is([data-state=FAILED], [data-state=DEAD]), .sw-workspace .sw-error { color: var(--bad, var(--aui-red, #994a42)); }
+.sw-workspace .sw-task-skills {
+  color: var(--sw-muted);
+  flex: 1 1 100%;
+  font-size: var(--sw-caption);
+}
+.sw-workspace .sw-notes li {
+  padding-block: 10px;
+  gap: 5px;
+}
+.sw-workspace .sw-notes time {
+  color: var(--sw-muted);
+  font-size: var(--sw-fine);
+}
+
+/* Form columns collapse independently of the surrounding navigation. */
+.sw-workspace .sw-fields {
+  gap: 13px;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.sw-workspace .sw-field {
+  color: var(--sw-ink);
+  gap: 5px;
+  align-content: start;
+  font-weight: var(--sw-medium);
+  font-size: var(--sw-caption);
+}
+.sw-workspace :is(input:not([type=checkbox]), select, textarea) {
+  inline-size: 100%;
+  min-inline-size: 0;
+  color: var(--sw-ink);
+  font: inherit;
+  padding: 7px 9px;
+  font-weight: 400;
+  margin: 0;
+  box-shadow: none;
+  border: var(--sw-rule);
+  background: var(--sw-paper);
+  border-radius: 7px;
+}
+.sw-workspace textarea { resize: vertical; }
+.sw-workspace :is(.sw-columns, .sw-note-refs, .sw-search) {
+  gap: var(--sw-gutter);
+  grid-template: none / repeat(var(--sw-columns, 2), var(--sw-track));
+}
+.sw-workspace .sw-note-refs { --sw-columns: 3; }
+.sw-workspace .sw-search {
+  margin-block-end: 8px;
+  grid-template: none / minmax(0, 2fr) var(--sw-track);
+}
+.sw-workspace .sw-choices {
+  padding: 4px 8px 8px;
+  margin: 0;
+  border: var(--sw-rule);
+  border-radius: var(--sw-panel-radius);
+}
+.sw-workspace .sw-choices legend {
+  padding-inline: 3px;
+  font-weight: var(--sw-medium);
+  font-size: var(--sw-caption);
+}
+.sw-workspace .sw-check-list {
+  overflow-y: auto;
+  padding: 2px;
+  max-block-size: 175px;
+}
+.sw-workspace .sw-check {
+  cursor: pointer;
+  padding-block: 4px;
+  align-items: start;
+  gap: 7px;
+}
+.sw-workspace .sw-check input {
+  appearance: auto;
+  block-size: 15px;
+  flex: none;
+  margin: 3px 0 0;
+  display: inline-block;
+  inline-size: 15px;
+}
+.sw-workspace .sw-skills {
+  gap: 8px;
+  margin-block-start: 12px;
+  --sw-tile-min: min(100%, 215px);
+  grid-template: none / repeat(auto-fit, minmax(var(--sw-tile-min), 1fr));
+}
+.sw-workspace .sw-skill {
+  border: var(--sw-rule);
+  padding: var(--sw-gutter) 12px;
+  border-radius: var(--sw-panel-radius);
+  align-content: start;
+}
+.sw-workspace .sw-origin { font-weight: var(--sw-medium); }
+.sw-workspace .sw-skill code {
+  color: var(--sw-muted);
+  font-size: 11px;
+}
+.sw-workspace .sw-related {
+  gap: 3px 6px;
+  font-size: var(--sw-caption);
+  margin-block-start: 4px;
+}
+.sw-workspace .sw-board summary {
+  color: var(--sw-ink);
+  font-weight: 600;
+  font-size: 15px;
+  cursor: pointer;
+}
+.sw-workspace .sw-post-meta {
+  gap: 4px 12px;
+  align-items: baseline;
+}
+
 @media (max-width: 720px) {
-  .sw-workspace .sw-layout { grid-template-columns: minmax(0,1fr); }
-  .sw-workspace .sw-groups { grid-template-columns: repeat(auto-fit, minmax(min(100%,150px), 1fr)); }
-  .sw-workspace .sw-columns, .sw-workspace .sw-note-refs { grid-template-columns: minmax(0,1fr); }
-  .sw-workspace .sw-card { padding: 14px; }
+  .sw-workspace :is(.sw-layout, .sw-columns, .sw-note-refs) { grid-template: none / var(--sw-track); }
+  .sw-workspace .sw-groups {
+    --sw-tile-min: min(100%, 150px);
+    grid-template: none / repeat(auto-fit, minmax(var(--sw-tile-min), 1fr));
+  }
+  .sw-workspace .sw-card { padding: var(--sw-section-gap); }
 }
 
-.sw-workspace .sw-board summary { color: var(--sw-ink); font-size: 15px; font-weight: 600; cursor: pointer; }
-.sw-workspace .sw-post-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
-
-.swarm-head-options { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.swarm-head-options {
+  grid-column: 1 / -1;
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
 @media (max-width: 760px) {
-  :root[data-route=swarms] body { grid-template-columns: minmax(0, 1fr); }
-  :root[data-route=swarms] .rail { min-height: auto; }
-  :root[data-route=swarms] nav[data-nav] { height: auto; position: static; padding: 6px 8px; }
-  :root[data-route=swarms] nav :is(.rail-brand, .rail-note) { display: none; }
-  :root[data-route=swarms] #nav-links { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  :root[data-route=swarms] nav a { justify-content: center; padding: 4px; min-height: 40px; }
-  :root[data-route=swarms] nav a .glyph { display: none; }
-  :root[data-route=swarms] .workspace { margin: 0; padding: 12px; }
-  :root[data-route=swarms] .brand .sub { overflow-wrap: anywhere; margin: 0; }
-  :root[data-route=swarms] .swarm-head-options { align-items: stretch; flex-direction: column; gap: 6px; min-width: 0; }
-  :root[data-route=swarms] #swarm-run { min-width: 0; min-height: 40px; }
-  :root[data-route=swarms] #swarm-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  :root[data-route=swarms] #swarm-stats .stat { grid-template-columns: minmax(0, 1fr) auto; gap: 2px 5px; }
+  :root[data-route=swarms] {
+    --sw-phone-track: minmax(0, 1fr);
+    --sw-nav-columns: repeat(4, var(--sw-phone-track));
+    --sw-stats-columns: repeat(2, var(--sw-phone-track));
+  }
+  :root[data-route=swarms] body { grid-template: none / var(--sw-phone-track); }
+  :root[data-route=swarms] .rail { min-block-size: auto; }
+  :root[data-route=swarms] nav[data-nav] {
+    position: static;
+    padding: 6px 8px;
+    block-size: auto;
+  }
+  :root[data-route=swarms] nav :is(.rail-brand, .rail-note, a .glyph) { display: none; }
+  :root[data-route=swarms] #nav-links { grid-template: none / var(--sw-nav-columns); }
+  :root[data-route=swarms] nav a {
+    padding: 4px;
+    place-content: normal center;
+    min-block-size: 40px;
+  }
+  :root[data-route=swarms] :is(.workspace, .brand .sub) { margin: 0; }
+  :root[data-route=swarms] .workspace { padding: 12px; }
+  :root[data-route=swarms] .brand .sub { overflow-wrap: anywhere }
+  :root[data-route=swarms] .swarm-head-options {
+    min-inline-size: 0;
+    align-items: stretch;
+    gap: 6px;
+    flex-direction: column;
+  }
+  :root[data-route=swarms] #swarm-run { min-block-size: 40px; min-inline-size: 0; }
+  :root[data-route=swarms] #swarm-stats {
+    gap: 8px;
+    grid-template: none / var(--sw-stats-columns);
+  }
+  :root[data-route=swarms] #swarm-stats .stat {
+    gap: 2px 5px;
+    grid-template: none / var(--sw-phone-track) auto;
+  }
   :root[data-route=swarms] #swarm-stats [data-card-icon] { display: none; }
   :root[data-route=swarms] #swarm-stats .stat > strong { grid-column: 2; }
   :root[data-route=swarms] #swarm-stats [data-stat-note] { grid-column: 1; }
@@ -28651,15 +28896,23 @@ cat > 'web/swarm.js' <<'OC_EOF_93'
   const label = (title, control) => element('label', 'sw-field', element('span', '', title), control);
   const meta = (...parts) => parts.filter(Boolean).join(' · ');
   function requestId() {
-    return window.crypto.randomUUID ? window.crypto.randomUUID() : Array.from(window.crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
+    const random = window.crypto;
+    if (random.randomUUID) return random.randomUUID();
+    const words = new Uint32Array(4);
+    random.getRandomValues(words);
+    return Array.from(words, word => word.toString(16).padStart(8, '0')).join('');
   }
-  async function json(url, body, signal) {
-    const options = {cache: 'no-store', signal};
-    if (body) Object.assign(options, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-    const res = await fetch(url, options);
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`);
-    return data;
+  async function json(path, body, signal) {
+    const init = {signal, cache: 'no-store'};
+    if (body) {
+      init.method = 'POST';
+      init.body = JSON.stringify(body);
+      init.headers = [['Content-Type', 'application/json']];
+    }
+    const response = await fetch(path, init);
+    const payload = await response.json();
+    if (response.ok) return payload;
+    throw new Error(payload?.detail || `Request failed (${response.status})`);
   }
   function textField(name, value, max, multiline, required) {
     const node = element(multiline ? 'textarea' : 'input');
@@ -28691,13 +28944,14 @@ cat > 'web/swarm.js' <<'OC_EOF_93'
     box.append(list);
     return box;
   }
+  const selectContents = new WeakMap();
   function updateSelect(select, options, none) {
-    const signature = JSON.stringify(options);
-    if (select.dataset.options === signature) return;
-    select.dataset.options = signature;
+    const key = JSON.stringify([none, options]);
+    if (selectContents.get(select) === key) return;
     const value = select.value;
     select.replaceChildren(new Option(none, ''), ...options.map(([v, title]) => new Option(title, v)));
     if (options.some(([v]) => v === value)) select.value = value;
+    selectContents.set(select, key);
   }
 
   function mount(root, options = {}) {
@@ -28705,11 +28959,11 @@ cat > 'web/swarm.js' <<'OC_EOF_93'
     function counted(n, singular, plural) { return t(n === 1 ? singular : plural, {count: n}); }
     const skillOrigin = skill => skill.source === 'registry' ? t('Shared registry') : t('Cockpit Library');
     const versionLabel = version => version == null || version === '' ? t('Version unrecorded') : t('Version {version}', {version});
-    let doc = null, selected = '', disposed = false, busy = false, reading = null;
+    const requests = new AbortController();
+    let doc = null, selected = '', busy = false, reading = null;
     let editor = null, noteForm = null, catalogLimit = 12;
     const drafts = new Map();
     const signatures = new Map();
-    const listener = new AbortController();
     const pick = id => doc.swarms.find(g => g.id === id);
     const taskHref = id => '/#/order/' + encodeURIComponent(doc.run) + '/' + encodeURIComponent(id);
     const translateState = state => state ? t(state) : t('Unavailable');
@@ -28878,8 +29132,14 @@ cat > 'web/swarm.js' <<'OC_EOF_93'
     }
     function renderSkills() {
       if (!doc) return;
-      const term = search.value.trim().toLowerCase();
-      const matches = doc.skills.filter(s => (!filter.value || s.source === filter.value) && [s.title, s.source_id, s.category, s.domain, s.version, skillOrigin(s)].join(' ').toLowerCase().includes(term));
+      const term = search.value.toLowerCase().trim();
+      const source = filter.value;
+      const matches = doc.skills.filter(skill => {
+        if (source && source !== skill.source) return false;
+        if (!term) return true;
+        const fields = [skill.title, skill.source_id, skill.category, skill.domain, skill.version, skillOrigin(skill)];
+        return fields.join(' ').toLowerCase().includes(term);
+      });
       const registry = {unconfigured: t('Shared registry is not configured.'), unavailable: t('Shared registry is unavailable.')};
       skillInfo.textContent = [counted(matches.length, '{count} skill', '{count} skills'), registry[doc.registry_status]].filter(Boolean).join(' · ');
       const uses = new Map();
@@ -28983,7 +29243,7 @@ cat > 'web/swarm.js' <<'OC_EOF_93'
       }
     }
     function render() {
-      if (disposed || !doc) return;
+      if (requests.signal.aborted || !doc) return;
       grid.hidden = catalog.hidden = false;
       runLine.textContent = meta(doc.writable ? t('Live run') : t('Archived run · read only'), doc.run);
       add.hidden = !doc.writable; add.disabled = busy;
@@ -28995,37 +29255,37 @@ cat > 'web/swarm.js' <<'OC_EOF_93'
       if (options.onData) options.onData(doc);
     }
     async function write(path, payload, fields, error, success) {
-      if (busy || disposed || !doc.writable) return;
+      if (busy || requests.signal.aborted || !doc.writable) return;
       epoch++; reading = null;
       busy = true; fields.disabled = true; add.disabled = true;
       error.textContent = ''; message.textContent = '';
       try {
-        const result = await json(path, payload, listener.signal);
-        if (disposed) return;
+        const result = await json(path, payload, requests.signal);
+        if (requests.signal.aborted) return;
         const at = doc.swarms.findIndex(g => g.id === result.swarm.id);
         if (at < 0) doc.swarms.push(result.swarm); else doc.swarms[at] = result.swarm;
         success(result.swarm);
       } catch (err) {
-        if (!disposed) error.textContent = t(err.message);
+        if (!requests.signal.aborted) error.textContent = t(err.message);
       } finally {
         busy = false; fields.disabled = false;
-        if (!disposed) { render(); await refresh(); }
+        if (!requests.signal.aborted) { render(); await refresh(); }
       }
     }
     let epoch = 0;
     function refresh() {
-      if (disposed || busy) return Promise.resolve();
+      if (requests.signal.aborted || busy) return Promise.resolve();
       if (reading) return reading;
       const start = epoch;
       const query = options.run ? '?run=' + encodeURIComponent(options.run) : '';
-      reading = json('/swarms' + query, null, listener.signal).then(fresh => {
-        if (disposed || busy || start !== epoch) return;
+      reading = json('/swarms' + query, null, requests.signal).then(fresh => {
+        if (requests.signal.aborted || busy || start !== epoch) return;
         if (doc && doc.run !== fresh.run) { closeEditor(); drafts.clear(); noteForm = null; selected = ''; signatures.clear(); }
         doc = fresh;
         readError.hidden = true;
         render();
       }).catch(err => {
-        if (!disposed && start === epoch) {
+        if (!requests.signal.aborted && start === epoch) {
           readError.replaceChildren(element('span', '', t('Could not refresh swarms. {reason}', {reason: t(err.message)})), retry);
           readError.hidden = false;
         }
@@ -29034,7 +29294,7 @@ cat > 'web/swarm.js' <<'OC_EOF_93'
     }
     closeEditor();
     refresh();
-    return {refresh, dispose() { disposed = true; listener.abort(); root.replaceChildren(); root.classList.remove('sw-workspace'); }};
+    return {refresh, dispose() { requests.abort(); root.replaceChildren(); root.classList.remove('sw-workspace'); }};
   }
   window.CockpitSwarms = {mount};
 })();
@@ -29136,8 +29396,8 @@ b9683dee17e348d338bd80379f92134d50e41df4554d69bb29143a4dd2df4f70 web/look-home.c
 8a74ed97cdea6696f0f63d554232efc86a82b8bd94e8527fa9968bc0859a013b web/look-records.css
 e0fe3cd4ea4d8fe1c3c8f1ea24aa92a2bdae9f2558c35b43fe0b357141e819ab web/look-team.css
 ea2b20db35b62d8b21432a95f54fe2b4ce0b8372969d8e6763b515c695a5ee5d web/status.js
-3d6d42f1bdc6cd8c2ba07d1badb0e4ba13ff806d2f5f7d428a434b5f3c5a665b web/swarm.css
-a34fec3048137568f3e49ee0bf5f0f01143e176dfcfb2f66b262f2ba239bb974 web/swarm.js
+81945c65578e208ab67e4bd588a93509d3aea0c1b3ec53c5cf2677c56ad546e6 web/swarm.css
+d4cb9c903f61abd152e9990f31d46dc93779e6f2eb2b2fe200aa9b11754a7538 web/swarm.js
 OC_EOF_94
 if [ "$bad" -ne 0 ]; then echo "opencode-cockpit.sh: $bad of $n files are wrong; do not use this folder" >&2; exit 1; fi
 echo "Wrote $n files into $(pwd) and checked each one."
