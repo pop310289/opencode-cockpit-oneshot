@@ -9964,7 +9964,9 @@ async function navigate(hashValue, view) {
   });
   if (changed) {
     const cards = visible[0].querySelectorAll('.card, .stat, .board-column, [data-example]').filter(e => !e.hidden);
-    if (cards.length && !media.matches) { assert.ok(visible[0].querySelector('[data-enter="card"]'), 'A route change enters the new cards'); }
+    if (view === 'library' && hashValue === '#/library') {
+      assert.equal(visible[0].querySelector('[data-enter="card"]'), null, 'The Library shelf is immediately available');
+    } else if (cards.length && !media.matches) { assert.ok(visible[0].querySelector('[data-enter="card"]'), 'A route change enters the new cards'); }
     if (media.matches) { assert.equal(all('[data-enter]').length, 0); }
     finishEntrances();
     assert.equal(document.documentElement.dataset.entered, hashValue);
@@ -19507,6 +19509,59 @@ class ScorecardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             quality.verify(report)
 
+    def test_motion_proof_requires_observed_comparable_frames_and_real_progress(self):
+        from unittest.mock import patch
+        base, next_version = self.report(), self.report()
+        base['versions'][0]['runtime_sha256'] = 'old'
+        next_version['versions'][0]['runtime_sha256'] = 'new'
+        def observation(moving):
+            return dict(pixels=1000, steps=[[125*t, 20 if moving else 0] for t in range(1, 65)])
+        def panel(active):
+            return {mode: {region: observation(active and mode == 'normal') for region in ('background', 'title')}
+                    for mode in ('normal', 'reduce')}
+        reference = panel(True)
+        with patch.dict(quality.MOTION_STAMP, reference=quality.digest(reference)):
+            proof = dict(instrument=quality.MOTION_STAMP.copy(), parent=quality.digest(base), reference=reference,
+                         before=dict(panel(False), runtime='old', assets={'app.css': 'old'}),
+                         after=dict(panel(True), runtime='new', assets={'app.css': 'new'}))
+            self.assertFalse(quality.advancement(base, next_version, 'gpt')['passed'])
+            sealed = quality.seal(base, copy.deepcopy(next_version), 'gpt', proof)
+            self.assertEqual(sealed['evolution']['improved'], ['motion.background.normal', 'motion.title.normal'])
+            quality.verify(sealed)
+            self.assertTrue(quality.advancement(base, sealed, 'gpt')['passed'])
+            self.assertEqual(next_version['axes'], sealed['axes'])
+            for subject in ('instrument', 'reference'):
+                corrupt = copy.deepcopy(sealed)
+                corrupt['evolution']['motion'][subject] = {}
+                with self.assertRaises(ValueError):
+                    quality.verify(corrupt)
+            for target in ('parent', 'runtime', 'short', 'stalled'):
+                evidence = copy.deepcopy(proof)
+                if target == 'parent':
+                    evidence['parent'] = 'another release'
+                elif target == 'runtime':
+                    evidence['after']['runtime'] = 'other client'
+                else:
+                    steps = evidence['after']['normal']['title']['steps']
+                    steps[:] = steps[:4] if target == 'short' else [*steps[:4], steps[-1]]
+                with self.assertRaises(ValueError):
+                    quality.advancement(base, next_version, 'gpt', evidence)
+            evidence = copy.deepcopy(proof)
+            evidence['after']['reduce']['title'] = observation(True)
+            result = quality.advancement(base, next_version, 'gpt', evidence)
+            self.assertFalse(result['passed'])
+            self.assertIn('motion.title.reduce', result['regressed'])
+            evidence['after'] = dict(panel(False), runtime='new', assets={'app.css': 'new'})
+            self.assertFalse(quality.advancement(base, next_version, 'gpt', evidence)['passed'])
+            m = self.metrics[0]
+            self.rows[m['id']] = dict(value=m['target'], evidence={'fixture': 1})
+            previous = self.report()
+            previous['versions'][0]['runtime_sha256'] = 'old'
+            proof['parent'] = quality.digest(previous)
+            result = quality.advancement(previous, next_version, 'gpt', proof)
+            self.assertFalse(result['passed'])
+            self.assertTrue(result['regressed'])
+
 
 if __name__ == '__main__':
     unittest.main()
@@ -21026,6 +21081,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -21156,6 +21212,118 @@ def compile_report(samples):
                 measured_at=max(s['captured'] for s in samples), versions=versions, axes=axes, metrics=rows)
 
 
+# Supplemental, screenshot-based coverage. The 97 v1 indicators keep their
+# original scales and verification. These identifiers fingerprint the separate
+# capture, pixel-mask measurement, counting rules and fixed reference frames.
+MOTION_STAMP = {
+    'capture': '42ecf3865b6ae96368e3a7761c34104daa7d9145ff818be5459532d2c8c99f8f',
+    'pixels': '18ed868dcbf1aee2d41aa48afb08c03aa5dd8a208cda29e07ccf17d02f8cbd8b',
+    'assets': 'fec1a37b960d9f5eb4646576e4ddf87aae898c8c4b5f5a17b9c366a7a6426ecf',
+    'rules': '83a9cc88815ed388d04bc4e946a90caa2b721c05ff4c35a19609639e7567dead',
+    'reference': 'c737c5ba136822105e66efc6be26e7bd7dd53cdb36a9aee3020c683e23ba2170',
+}
+
+
+def motion_activity(region, reduced):
+    # Each row contains the capture time in ms and number of changed mask pixels.
+    pixels, steps = region['pixels'], region['steps']
+    if type(pixels) is not int or pixels < 64 or not isinstance(steps, list):
+        raise ValueError('Invalid motion mask or samples')
+    end, observed, active = -1, 0, 0
+    for timestamp, changed_pixels in steps:
+        if (type(timestamp) is not int or not 0 < timestamp - end <= 1000 or type(changed_pixels) is not int
+                or not 0 <= changed_pixels <= pixels):
+            raise ValueError('Invalid motion frame sequence')
+        end = timestamp
+        if timestamp >= 750:
+            observed += 1
+            active += 100 * changed_pixels >= pixels
+    if end < (2750 if reduced else 7500) or observed < (10 if reduced else 28):
+        raise ValueError('Insufficient motion frames')
+    return active / observed
+
+
+def compare_motion(proof, previous_digest, previous_runtime, candidate_runtime):
+    if (proof['instrument'] != MOTION_STAMP or digest(proof['reference']) != MOTION_STAMP['reference']
+            or proof['parent'] != previous_digest or proof['before']['runtime'] != previous_runtime
+            or proof['after']['runtime'] != candidate_runtime or previous_runtime == candidate_runtime
+            or proof['before']['assets'] == proof['after']['assets']):
+        raise ValueError('Motion evidence is not bound to these releases and the frozen reference')
+    gains, losses = [], []
+    for mode in ('normal', 'reduce'):
+        reduced = mode == 'reduce'
+        for region in ('background', 'title'):
+            metric = 'motion.' + region + '.' + mode
+            ref, before, after = [motion_activity(proof[key][mode][region], reduced)
+                                  for key in ('reference', 'before', 'after')]
+            if reduced:
+                was, now = before < .05, after < .05
+            else:
+                was, now = (before >= .2) == (ref >= .2), (after >= .2) == (ref >= .2)
+            if now and not was:
+                gains.append(metric)
+            if not now and (was or reduced):
+                losses.append(metric)
+    return gains, losses
+
+
+def edition_runtime(report, slot):
+    return next(v['runtime_sha256'] for v in report['versions'] if v['id'] == slot)
+
+
+def with_motion(result, proof, previous_digest, previous_runtime, runtime):
+    if proof is None:
+        return result
+    gains, losses = compare_motion(proof, previous_digest, previous_runtime, runtime)
+    improved = result['improved'] + gains
+    regressed = result['regressed'] + losses
+    return dict(result, improved=improved, regressed=regressed, passed=bool(improved) and not regressed)
+
+
+def check_motion_assets(root, captured):
+    page = (Path(root) / 'web/index.html').read_text()
+    imports = set(re.findall(r'(?:href|src)=["\']/web/([\w.-]+\.(?:css|m?js))["\']', page))
+    if not imports or set(captured) != imports:
+        raise ValueError('Motion capture does not cover the served scripts and styles')
+    for name in imports:
+        if hashlib.sha256((Path(root) / 'web' / name).read_bytes()).hexdigest() != captured[name]:
+            raise ValueError('Captured asset differs from packaged client: ' + name)
+
+
+def motion_capture(metrics, root=None):
+    for file, stamp in [('capture.cjs', 'capture'), ('analyze.py', 'pixels'), ('assets.py', 'assets')]:
+        if metrics['instruments'][file] != MOTION_STAMP[stamp]:
+            raise ValueError('Motion measurement instrument changed')
+    capture = metrics['assets']
+    if not (capture.get('postCapture') is True or (capture.get('before') is True and capture.get('after') is True)):
+        raise ValueError('A completed capture with a served-asset check is required')
+    data = {}
+    for mode in ('normal', 'reduce'):
+        data[mode] = {}
+        for area in ('background', 'title'):
+            sample = metrics[mode][area]
+            region = dict(pixels=sample['maskPixels'], steps=[
+                [round(frame['tMs']), frame['changedPixels']] for frame in sample['steps']])
+            motion_activity(region, mode == 'reduce')
+            data[mode][area] = region
+    if root is not None:
+        data['assets'] = {name.partition('/web/')[2]: value for name, value in metrics['assets']['files'].items()}
+        check_motion_assets(root, data['assets'])
+        data['runtime'] = source_fingerprint(dict(id='gpt', root=root))
+    return data
+
+
+def motion_evidence(previous, reference, old_capture, new_capture, old_root, new_root):
+    verify(previous)
+    before = motion_capture(old_capture, old_root)
+    after = motion_capture(new_capture, new_root)
+    parent = digest(previous)
+    result = dict(instrument=MOTION_STAMP.copy(), reference=motion_capture(reference),
+                  parent=parent, before=before, after=after)
+    compare_motion(result, parent, edition_runtime(previous, 'gpt'), after['runtime'])
+    return result
+
+
 def verify(report):
     # Recompute from raw values so a hand-edited score, threshold or denominator is detected.
     samples = []
@@ -21171,11 +21339,13 @@ def verify(report):
     if 'evolution' in report:
         proof = report['evolution']
         result = compare_values(proof['previous_values'], report, proof['slot'])
+        result = with_motion(result, proof.get('motion'), proof.get('previous_report_sha256'),
+                             proof.get('previous_runtime_sha256'), edition_runtime(report, proof['slot']))
         if not result['passed'] or any(proof[k] != value for k, value in result.items()):
             raise ValueError('Release did not meet the advancement gate')
 
 
-def advancement(previous, candidate, slot):
+def advancement(previous, candidate, slot, motion=None):
     verify(previous)
     verify(candidate)
     if previous['instruments_sha256'] != candidate['instruments_sha256']:
@@ -21189,7 +21359,11 @@ def advancement(previous, candidate, slot):
         if v['id'] != slot and v['id'] in old_versions and old_versions[v['id']] != v['runtime_sha256']:
             raise ValueError('Reference edition changed: ' + v['id'])
     values = {row['id']: row['results'][slot]['value'] for row in previous['metrics']}
-    return compare_values(values, candidate, slot)
+    evidence = candidate.get('evolution', {})
+    if motion is None and evidence.get('previous_report_sha256') == digest(previous):
+        motion = evidence.get('motion')
+    return with_motion(compare_values(values, candidate, slot), motion, digest(previous),
+                       old_versions[slot], edition_runtime(candidate, slot))
 
 
 def compare_values(values, candidate, slot):
@@ -21215,14 +21389,16 @@ def compare_values(values, candidate, slot):
     return dict(slot=slot, improved=gains, regressed=losses, passed=bool(gains) and not losses)
 
 
-def seal(previous, candidate, slot):
-    gate = advancement(previous, candidate, slot)
+def seal(previous, candidate, slot, motion=None):
+    gate = advancement(previous, candidate, slot, motion)
     if not gate['passed']:
         raise ValueError('Advancement failed: ' + json.dumps(gate))
     build = next(v for v in previous['versions'] if v['id'] == slot)
     candidate['evolution'] = dict(gate, previous_revision=build['revision'],
                                   previous_report_sha256=digest(previous),
                                   previous_values={r['id']:r['results'][slot]['value'] for r in previous['metrics']})
+    if motion is not None:
+        candidate['evolution'].update(previous_runtime_sha256=build['runtime_sha256'], motion=motion)
     return candidate
 
 
@@ -21234,6 +21410,8 @@ def release_check(report, root):
         raise ValueError('Measurement tools changed since this report')
     current = source_fingerprint(dict(root=root, id=slot))
     edition = next(v for v in report['versions'] if v['id'] == slot)
+    if 'motion' in proof:
+        check_motion_assets(root, proof['motion']['after']['assets'])
     if edition['runtime_sha256'] != current:
         raise ValueError('Runtime differs from the measured edition; measure and seal the new report')
 
@@ -21260,6 +21438,12 @@ def main():
     seal_cmd.add_argument('candidate')
     seal_cmd.add_argument('--slot', choices=['gpt','mine'], default='gpt')
     seal_cmd.add_argument('--out', required=True)
+    frames = commands.add_parser('motion-proof', help='bind three measured frame captures to their releases')
+    for argument in ('previous', 'reference', 'before', 'after', 'before_root', 'after_root'):
+        frames.add_argument(argument)
+    frames.add_argument('--out', required=True)
+    for command in (advance, seal_cmd):
+        command.add_argument('--motion', help='optional frozen before/after frame observations')
     args = parser.parse_args()
     if args.command == 'measure':
         import quality_browser
@@ -21276,10 +21460,13 @@ def main():
     elif args.command == 'check':
         verify(read(args.report))
         print('All scores and denominators verified.')
+    elif args.command == 'motion-proof':
+        store(args.out, motion_evidence(read(args.previous), read(args.reference), read(args.before),
+                                        read(args.after), args.before_root, args.after_root))
     elif args.command == 'seal':
-        store(args.out, seal(read(args.previous), read(args.candidate), args.slot))
+        store(args.out, seal(read(args.previous), read(args.candidate), args.slot, read(args.motion) if args.motion else None))
     else:
-        result = advancement(read(args.previous), read(args.candidate), args.slot)
+        result = advancement(read(args.previous), read(args.candidate), args.slot, read(args.motion) if args.motion else None)
         print(json.dumps(result))
         return 0 if result['passed'] else 1
     return 0
@@ -25762,10 +25949,32 @@ import * as F from './format.mjs';
   var C = {run: null, selected: null, tab: 'timeline', search: '', scale: null, x: 0, y: 0, open: {}, talk: 'all', draft: {title: '', goal: ''}, sending: false, error: '', replay: null, snapshot: null, playing: false, playVersion: 0, fitted: true};
   var motionPreference = '(prefers-reduced-motion)';
   var motionQuery = window.matchMedia && window.matchMedia(motionPreference);
+  var observedHero = null, heroInView = false;
+  var heroVisibility = 'IntersectionObserver' in window ? new window.IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (entry.target === observedHero) { heroInView = entry.isIntersecting; }
+    });
+    setHeroPlayback();
+  }) : null;
+  function setHeroPlayback() {
+    document.documentElement.dataset.heroPlayback = heroInView && !document.hidden ? 'running' : 'paused';
+  }
+  function observeHero() {
+    var next = S.view === 'home' ? document.querySelector('[data-view="home"] [data-hero]') :
+      S.view === 'library' && !S.route[1] ? document.querySelector('#library-content [data-hero]') : null;
+    if (next === observedHero) { return; }
+    if (heroVisibility) { heroVisibility.disconnect(); }
+    observedHero = next; heroInView = !!next && !heroVisibility;
+    if (next && heroVisibility) { heroVisibility.observe(next); }
+    setHeroPlayback();
+  }
   function clearEnter(e) { e.removeAttribute('data-enter'); e.removeAttribute('data-enter-step'); }
   function motionChanged() {
     document.documentElement.dataset.motion = motionQuery && motionQuery.matches ? 'reduce' : 'on';
-    if (motionQuery && motionQuery.matches) { document.querySelectorAll('[data-enter]').forEach(clearEnter); }
+    if (motionQuery && motionQuery.matches) {
+      document.documentElement.dataset.heroIntro = 'quiet';
+      document.querySelectorAll('[data-enter]').forEach(clearEnter);
+    }
   }
   motionChanged();
   if (motionQuery) {
@@ -25920,6 +26129,14 @@ import * as F from './format.mjs';
     return h('span', {'data-seat-chip': seat.id || seat.actor || 'system', 'data-seat-tone': seatTone(seat, run), 'class': 'seat-chip', title: (prefix || '') + seat.name},
       prefix ? h('span', null, prefix) : null, seatIcon(seat, run, 20, square || 32), h('span', {'class': 'cut-text'}, seat.name));
   }
+  function heroAction(control) {
+    var label = control.textContent;
+    control.textContent = '';
+    control.setAttribute('data-hero-action', '');
+    control.appendChild(h('span', {'class': 'hero-action-mark', 'aria-hidden': 'true'}));
+    control.appendChild(h('span', {'class': 'hero-action-caption'}, label));
+    return control;
+  }
   function cardHeading(title) { return h('h3', null, cardIcon(cardSubject(title)), title); }
   function cardSubject(title) {
     if (/results|succeeded|accepted|done/i.test(title)) { return 'results'; }
@@ -25963,7 +26180,7 @@ import * as F from './format.mjs';
       view.querySelectorAll('[data-enter]').forEach(clearEnter);
       document.documentElement.dataset.entered = hash;
     }
-    if (document.documentElement.dataset.motion === 'reduce') { finish(); return; }
+    if (document.documentElement.dataset.motion === 'reduce' || (S.view === 'library' && !S.route[1])) { finish(); return; }
     function enter(e, kind, step) {
       attrs(e, {'data-enter': kind, 'data-enter-step': Math.min(step, 7)});
       on(e, 'animationend', function (ev) { if (ev.target === e) { clearEnter(e); } });
@@ -26043,6 +26260,7 @@ import * as F from './format.mjs';
   function fill(e, kids) {
     var x = window.scrollX, y = window.scrollY, positions = [e].concat(Array.from(e.querySelectorAll('[data-list-window], .canvas-tab-content, .seat-messages, #activity'))).map(function (node) { return [node, node.scrollTop]; });
     reconcile(e, kids);
+    if (e.id === 'library-content') { observeHero(); }
     positions.forEach(function (pair) { if (pair[0].isConnected && pair[0].scrollTop !== pair[1]) { pair[0].scrollTop = pair[1]; } });
     if (window.scrollTo && (window.scrollX !== x || window.scrollY !== y)) { window.scrollTo(x, y); }
   }
@@ -26104,7 +26322,28 @@ import * as F from './format.mjs';
       if (destination[0] === '#/') { on(action, 'click', function () { if (S.view === 'home') { $('compose-title').focus(); } }); }
       content.appendChild(action);
     }
-    return h('div', {'class': 'empty', 'data-empty': ''}, art, content);
+    var box = h('div', {'class': 'empty', 'data-empty': ''}, art, content);
+    if (S.view === 'library' || S.view === 'home') {
+      on(art, 'pointermove', steerEmptyObject);
+      on(art, 'pointerleave', centerEmptyObject);
+      on(art, 'pointercancel', centerEmptyObject);
+    }
+    return box;
+  }
+  function steerEmptyObject(ev) {
+    if (ev.pointerType === 'touch' || document.documentElement.dataset.motion !== 'on') { return; }
+    var drawing = ev.currentTarget;
+    var rect = drawing.getBoundingClientRect();
+    function offset(position, length) {
+      if (length <= 0) { return '0px'; }
+      return (7.5 * Math.max(-1, Math.min(1, 2 * position / length - 1))).toFixed(2) + 'px';
+    }
+    drawing.style.setProperty('--object-x', offset(ev.clientX - rect.left, rect.width));
+    drawing.style.setProperty('--object-y', offset(ev.clientY - rect.top, rect.height));
+  }
+  function centerEmptyObject(ev) {
+    ev.currentTarget.style.removeProperty('--object-x');
+    ev.currentTarget.style.removeProperty('--object-y');
   }
   // A bounded viewport retains every row, with an explicit way to expand it.
   function listWindow(content, key, count, threshold, height, header) {
@@ -27964,7 +28203,7 @@ import * as F from './format.mjs';
     fill($('compose-library'), [availableLibrary()]);
     var lead = S.team && S.team.seats.filter(function (s) { return s.actor === S.team.lead; })[0];
     fill($('compose-lead'), [leadView(lead), h('p', {'class': 'hint'}, 'Your order goes to the lead, who splits it and hands it out to the team.')]);
-    var composeAction = h('button', {type: 'button'}, 'New order');
+    var composeAction = heroAction(h('button', {type: 'button'}, 'New order'));
     on(composeAction, 'click', function () { $('compose-title').focus(); });
     fill($('home-day-link'), [composeAction, dayLink(today, 'Open today')]);
     var newest = orders.slice().sort(function (a, b) { return (b.t || 0) - (a.t || 0); })[0];
@@ -28939,9 +29178,10 @@ import * as F from './format.mjs';
     var uses = entries.reduce(function (n, e) { return n + e.used; }, 0);
     var latest = entries.reduce(function (best, item) { return !best || item.at > best.at ? item : best; }, null);
     var overview = h('header', {'data-hero': '', 'class': 'library-overview'},
+      h('span', {'class': 'hero-current', 'aria-hidden': 'true', 'data-key': 'library-current'}),
       h('div', {'class': 'page-head'}, h('div', null, h('h2', null, 'Library'),
         latest ? h('p', {'class': 'library-recent'}, 'Latest ', h('time', {datetime: latest.at}, wallDate(Date.parse(latest.at) / 1000)), ' / ', stateLabel(latest.kind)) : null),
-        latest ? attrs(libLink(latest.id, entryTitle(latest)), {'class': 'library-primary', 'aria-label': 'Open latest record: ' + entryTitle(latest)}) : h('a', {href: '#/files', 'class': 'library-primary'}, 'Browse hand-ins')),
+        heroAction(latest ? attrs(libLink(latest.id, entryTitle(latest)), {'class': 'library-primary', 'aria-label': 'Open latest record: ' + entryTitle(latest)}) : h('a', {href: '#/files', 'class': 'library-primary'}, 'Browse hand-ins'))),
       h('div', {'class': 'stats view-stats'}, ...summaryStats('library', [
         ['records', 'Records', entries.length, 'Across matching versions', 'results'],
         ['entries', 'In use', inUse.length, 'Current accepted entries', 'library'],
@@ -29379,11 +29619,14 @@ import * as F from './format.mjs';
         (view === 'order' && (!parts[1] || !parts[2]))) { view = 'home'; parts = []; }
     S.orderRequest++; S.libraryRequest++; S.view = view; S.route = parts; S.focusOrderFiles = view === 'order' && parts[3] === 'files'; S.focusOrderTree = view === 'order' && parts[3] === 'tree';
     document.documentElement.dataset.route = view;
+    // Direct links introduce the hero. Moving to the collection inside the workspace is immediate.
+    document.documentElement.dataset.heroIntro = document.documentElement.dataset.motion === 'on' && (view === 'home' || (view === 'library' && !parts[1] && navigation === 1)) ? 'play' : 'quiet';
     var compact = ['home', 'board', 'files', 'ledger', 'swarms', 'library'].includes(view);
     document.documentElement.dataset.layout = compact ? 'responsive' : 'desktop';
     var viewport = $('page-viewport'), width = compact ? 'width=device-width,initial-scale=1' : 'width=1280';
     if (viewport.getAttribute('content') !== width) { viewport.setAttribute('content', width); }
     document.querySelectorAll('[data-view]').forEach(function (e) { e.hidden = e.getAttribute('data-view') !== view; });
+    observeHero();
     var nav = view === 'day' || view === 'order' ? 'calendar' : view;
     document.querySelectorAll('[data-nav-to]').forEach(function (a) { if (a.getAttribute('data-nav-to') === nav) { a.setAttribute('aria-current', 'page'); } else { a.removeAttribute('aria-current'); } });
     if (view === 'order') {
@@ -29627,7 +29870,7 @@ import * as F from './format.mjs';
       }
     }
   });
-  on(document, 'visibilitychange', function () { if (!document.hidden) { pollStatus(); } });
+  on(document, 'visibilitychange', function () { setHeroPlayback(); if (!document.hidden) { pollStatus(); } });
   route(); loop(); statusLoop();
   loadLocalUI('hero', true, function (hero) { window.CockpitHero = hero.mount(); });
 }());
@@ -29932,6 +30175,145 @@ html:root body {
    A seat's colour stays on small marks only (its bars, dots and lines), so a list of five seats is not five colours. */
 html:root body :is(.cp-graph-avatar .cp-graph-avatar-wash, .seat-icon > rect[data-seat-wash]) { fill: #f5f5f5 !important; stroke: rgba(0, 0, 0, .08); stroke-width: 1; }
 html:root body .cp-graph-avatar :is(.cp-graph-initials, .cp-graph-anonymous) { fill: rgba(0, 0, 0, .61) !important; }
+
+/* Moving light stays below the controls, inside the hero's own paint area. */
+#library-content .library-overview{position:relative; isolation:isolate;}
+.hero-current{
+  position:absolute;
+  inset:0;
+  z-index:-1;
+  pointer-events:none;
+  border-radius:inherit;
+  overflow:clip;
+}
+[data-motion=on] .hero-current{
+  background:linear-gradient(158deg,#fff4eb 2%,#f1e9fb 53%,#e9fcff 96%);
+}
+[data-motion=on] .hero-current::before{
+  content:"";
+  position:absolute;
+  inset:-26%;
+  background:radial-gradient(ellipse 29% 57% at 32% 78%, #62a1ff 4%, transparent 79%),
+    radial-gradient(ellipse 34% 75% at 64% 26%, #ff8393 7%, transparent 83%),
+    radial-gradient(ellipse 32% 48% at 78% 69%, #bd8ef6 2%, transparent 85%);
+  animation:3s infinite ease-in-out current-drift;
+}
+@keyframes current-drift{
+  0%,to{transform:translate3d(-9%,4%,0) rotate(-3deg) scaleY(.82);}
+  50%{transform:translate3d(8%,-6%,0) rotate(3deg) scaleY(1.18);}
+}
+[data-motion=on] .hero-current::after{
+  content:"";
+  position:absolute;
+  inset:-17%;
+  background:radial-gradient(ellipse 28% 59% at 18% 88%, #3be0fa, transparent 79%),
+    radial-gradient(ellipse 34% 62% at 71% 70%, #fffafe 6%, transparent 87%),
+    radial-gradient(ellipse 25% 64% at 44% 30%, #ffa87f, transparent 81%);
+  animation:current-glow 2.5s ease-in-out -.6s infinite;
+}
+@keyframes current-glow{
+  from,to{opacity:.13; transform:translateX(-5%) scaleY(.97);}
+  50%{opacity:.97; transform:translateX(5%) scaleY(1.07);}
+}
+/* Limit the moving ink to the actual title. High-contrast users keep system ink. */
+@supports (background-clip:text){
+  @media (forced-colors:none){
+    html[data-motion=on] :is(#hero-date,#library-content .library-overview h2){
+      inline-size:fit-content;
+      background-image:linear-gradient(108deg,#5a235c 8%,#003c98 33%,#a51d49 56%,#084978 78%,#5a235c 92%);
+      background-size:300% 100%;
+      background-clip:text;
+      color:transparent;
+      animation:title-tide 8s cubic-bezier(.39,.07,.61,.93) infinite;
+    }
+  }
+}
+@keyframes title-tide{
+  from,to{background-position-x:0%;}
+  50%{background-position-x:100%;}
+}
+/* Reveal the ink on direct entry or when returning Home. Keep the title's box steady. */
+@media (forced-colors:none){
+  html[data-motion=on][data-hero-intro=play] :is(#hero-date,#library-content .library-overview h2){
+    animation:title-tide 8s cubic-bezier(.39,.07,.61,.93) infinite, title-uncover 1.1s cubic-bezier(.22,.64,.32,1);
+  }
+}
+@keyframes title-uncover{
+  from{clip-path:inset(0 90% 0 0); opacity:.72;}
+  74%,to{clip-path:inset(0); opacity:1;}
+}
+[data-motion=on] [data-hero-action] .hero-action-mark{
+  display:inline-block;
+  inline-size:.46em;
+  block-size:.46em;
+  border-inline-end:.12em solid;
+  border-block-start:.12em solid;
+  transform:rotate(45deg);
+  margin-inline-end:.63em;
+  vertical-align:.09em;
+}
+[data-motion=on][data-hero-intro=play] [data-hero-action] .hero-action-mark{
+  animation:action-point 520ms cubic-bezier(.22,.66,.32,1);
+}
+[data-motion=on][data-hero-intro=play] [data-hero-action] .hero-action-caption{
+  animation:action-letter 480ms ease-out;
+}
+@keyframes action-point{
+  from{opacity:.1; transform:translateX(-.4em) rotate(20deg);}
+  to{opacity:1; transform:rotate(45deg);}
+}
+@keyframes action-letter{
+  0%,18%{opacity:.22;}
+  to{opacity:1;}
+}
+:root body :is(#home-day-link,#library-content) [data-hero-action]{
+  transition:transform 160ms ease-out, background-color 160ms ease-out;
+}
+:root body :is(#home-day-link,#library-content) [data-hero-action]:active{
+  transform:scale(.97);
+}
+/* Keep the filled rail item anchored. Other destinations respond through ink. */
+html[data-motion=on]:is([data-route=library],[data-route=home]) #nav-links a:not([aria-current]){
+  color:#58616b;
+  transition:color 160ms ease;
+}
+html[data-motion=on]:is([data-route=library],[data-route=home]) #nav-links a:not([aria-current]):is(:hover,:focus-visible){
+  color:#253649;
+  background-color:transparent;
+}
+html[data-motion=reduce] #nav-links a[data-nav-to],
+html[data-motion=reduce] body :is(#home-day-link,#library-content) [data-hero-action]{
+  transition-duration:0s;
+}
+html[data-hero-playback=paused] .hero-current::before,
+html[data-hero-playback=paused] .hero-current::after,
+html[data-hero-playback=paused] [data-hero] :is(h2,.hero-action-mark,.hero-action-caption){
+  animation-play-state:paused !important;
+}
+
+/* Let the fine lines track the pointer while the object settles against its shadow. */
+html[data-motion=on]:is([data-route=library],[data-route=home]) .empty-detail{
+  transform:translate(var(--object-x,0px),var(--object-y,0px));
+  transform-box:fill-box;
+  transform-origin:50% 66%;
+  transition:transform 130ms ease-out, scale 150ms ease;
+}
+html[data-motion=on]:is([data-route=library],[data-route=home]) .empty-art{
+  transform-origin:50% 78%;
+  transition:scale 160ms cubic-bezier(.22,.7,.32,1);
+}
+html[data-motion=on]:is([data-route=library],[data-route=home]) .empty:active .empty-art{
+  scale:.96 .89;
+}
+
+html[data-motion=on]:is([data-route=library],[data-route=home]) .empty:active .empty-detail{
+  scale:1 .14;
+}
+html[data-motion=reduce] [data-hero-action] .hero-action-mark{display:none;}
+/* System colors replace the painted light, so omit its animation layers. */
+@media (forced-colors:active){
+  .hero-current{display:none;}
+}
 OC_EOF_91
 cat > 'web/format.mjs' <<'OC_EOF_92'
 /* Deterministic display formatting. Time and timezone are supplied by callers. */
@@ -30229,7 +30611,7 @@ cat > 'web/index.html' <<'OC_EOF_94'
 <p id="notice" class="notice" hidden></p>
 <main>
 <section data-view="home" aria-labelledby="hero-date">
-  <section data-hero class="hero"><div id="hero-art"></div><div class="page-head"><div><p id="home-h" class="eyebrow">Make room for good work.</p><h2 id="hero-date">Today</h2><p id="hero-sentence">Give your team a clear goal, then follow the work here.</p></div><div id="home-day-link" class="hero-actions"></div></div><div id="hero-stats" class="stats"></div></section>
+  <section data-hero class="hero"><span class="hero-current" aria-hidden="true"></span><div id="hero-art"></div><div class="page-head"><div><p id="home-h" class="eyebrow">Make room for good work.</p><h2 id="hero-date">Today</h2><p id="hero-sentence">Give your team a clear goal, then follow the work here.</p></div><div id="home-day-link" class="hero-actions"></div></div><div id="hero-stats" class="stats"></div></section>
   <section id="home-proposals" data-home-proposals hidden aria-label="Proposals waiting for you"></section>
   <div class="home-row home-overview"><div><div id="home-activity-chart"></div><div id="home-week"></div></div><div><div id="home-run-meter"></div><section class="card attention-card"><h3>Needs attention</h3><ul data-attention id="attention"></ul></section></div></div>
   <h3 id="compose-heading" class="section-heading">Plan the next result</h3>
@@ -31654,7 +32036,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
  "criteria_sha256": "44159b4742b475ce35c3c9ed8dc29df84f33592cf52da9556bde4a5137704c6c",
  "instruments_sha256": "849c6dcfac1405f55e87137179065f43c804b5cd63d86a8cdf5118cbcb0de311",
  "fixture": "release-review-v1",
- "measured_at": "2026-11-23T18:47:40+00:00",
+ "measured_at": "2026-11-24T01:02:13+00:00",
  "versions": [
   {
    "id": "paid",
@@ -31668,9 +32050,9 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "id": "gpt",
    "name": "GPT-6.2",
    "color": "#005ea8",
-   "revision": "Runtime 2ecfe60effc0",
-   "runtime_sha256": "2ecfe60effc082a173d40390fbccbf707de634ae07cc27c2bdf851b5ae8e8bb1",
-   "captured": "2026-11-23T18:47:40+00:00"
+   "revision": "Runtime 5cb2504c4dfd",
+   "runtime_sha256": "5cb2504c4dfd5788fb928101caffb7bd8bab78d8c64317fe57a707ed87045898",
+   "captured": "2026-11-24T01:02:13+00:00"
   },
   {
    "id": "mine",
@@ -31888,7 +32270,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "total": 8,
      "measured": 8,
      "passed": 6,
-     "score": 0.9354034078891813
+     "score": 0.9348384032328164
     },
     "mine": {
      "total": 8,
@@ -31997,8 +32379,8 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "score": 1,
      "evidence": {
       "files": 20,
-      "passed": 235,
-      "executed": 235,
+      "passed": 236,
+      "executed": 236,
       "skipped": 8,
       "failures": []
      }
@@ -33193,7 +33575,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "passed": true,
      "score": 1,
      "evidence": {
-      "revision": "1faa97c1b5b6b6547f46b4ab624b5f84a896fc2b",
+      "revision": "b48aa66a4a96cfce8520a1c0a0abf5bd7e89b2f7",
       "scanner": "privacy_scan",
       "scope": "reachable history"
      }
@@ -35341,16 +35723,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 50.19999980926514,
+     "value": 52.60000038146973,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       50.19999980926514,
-       47.799999713897705,
-       52.19999980926514,
-       46.0,
-       51.69999980926514
+       52.60000038146973,
+       48.90000009536743,
+       57.59999990463257,
+       46.89999961853027,
+       54.30000019073486
       ],
       "aggregate": "median",
       "cold": true
@@ -35401,16 +35783,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 20.0,
+     "value": 32.0,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       16.0,
-       20.0,
-       20.0,
-       16.0,
-       20.0
+       32.0,
+       32.0,
+       36.0,
+       28.0,
+       36.0
       ],
       "aggregate": "median",
       "cold": true
@@ -35461,16 +35843,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 833.1806640625,
+     "value": 841.2099609375,
      "passed": false,
-     "score": 0.6779125758579799,
+     "score": 0.6734319414411273,
      "evidence": {
       "samples": [
-       833.1806640625,
-       833.1806640625,
-       833.1806640625,
-       833.1806640625,
-       833.1806640625
+       841.2099609375,
+       841.2099609375,
+       841.2099609375,
+       841.2099609375,
+       841.2099609375
       ],
       "aggregate": "median",
       "cold": true
@@ -35574,16 +35956,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "reason": "No rendered link to a supported order detail API"
     },
     "gpt": {
-     "value": 67.59999990463257,
+     "value": 61.5,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       68.30000019073486,
-       67.59999990463257,
-       84.69999980926514,
-       65.10000038146973,
-       66.5
+       65.59999990463257,
+       61.10000038146973,
+       77.39999961853027,
+       60.80000019073486,
+       61.5
       ],
       "aggregate": "median"
      }
@@ -35625,16 +36007,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "reason": "No rendered link to a supported order detail API"
     },
     "gpt": {
-     "value": 84.69999980926514,
+     "value": 77.39999961853027,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       68.30000019073486,
-       67.59999990463257,
-       84.69999980926514,
-       65.10000038146973,
-       66.5
+       65.59999990463257,
+       61.10000038146973,
+       77.39999961853027,
+       60.80000019073486,
+       61.5
       ],
       "aggregate": "maximum"
      }
@@ -35678,12 +36060,12 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 31.362237529343606,
+     "value": 31.36696586943153,
      "passed": false,
-     "score": 0.80531468725547,
+     "score": 0.8052752844214038,
      "evidence": {
-      "seconds": 12.003699999809266,
-      "bytes": 385498,
+      "seconds": 12.002700000286103,
+      "bytes": 385524,
       "requests": 13,
       "repeat": true
      }
@@ -35723,12 +36105,12 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 1.0829994085329162,
+     "value": 1.0830896381389292,
      "passed": true,
      "score": 1,
      "evidence": {
-      "seconds": 12.003699999809266,
-      "bytes": 385498,
+      "seconds": 12.002700000286103,
+      "bytes": 385524,
       "requests": 13,
       "repeat": true
      }
@@ -38313,13 +38695,13 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
  "evolution": {
   "slot": "gpt",
   "improved": [
-   "mobile.home",
-   "records.phone"
+   "motion.background.normal",
+   "motion.title.normal"
   ],
   "regressed": [],
   "passed": true,
-  "previous_revision": "Runtime 604c12a76a06",
-  "previous_report_sha256": "68e1283aa6cbceb24a678dfc3ca3372a6bdb2e5a382cd61419ef3de5b5ea27b3",
+  "previous_revision": "Runtime 2ecfe60effc0",
+  "previous_report_sha256": "cea9d5cb6830de16b8a71eed7b4338acd3d9b6dc73e097fad12015287f05e575",
   "previous_values": {
    "correct.tests": 1.0,
    "correct.invariants": 13,
@@ -38377,7 +38759,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "action.tab": 1,
    "action.month": 1,
    "action.group": 1,
-   "mobile.home": 1,
+   "mobile.home": 2,
    "mobile.board": 2,
    "mobile.team": 1,
    "mobile.calendar": 1,
@@ -38385,14 +38767,14 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "mobile.files": 2,
    "mobile.ledger": 2,
    "mobile.swarms": 2,
-   "speed.home": 43.799999713897705,
-   "speed.paint": 16.0,
-   "speed.bytes": 801.4716796875,
+   "speed.home": 50.19999980926514,
+   "speed.paint": 20.0,
+   "speed.bytes": 833.1806640625,
    "speed.requests": 17.0,
-   "speed.order": 67.7999997138977,
-   "speed.tail": 83.5,
-   "speed.pollbytes": 31.352419215669105,
-   "speed.pollrate": 1.083098661965182,
+   "speed.order": 67.59999990463257,
+   "speed.tail": 84.69999980926514,
+   "speed.pollbytes": 31.362237529343606,
+   "speed.pollrate": 1.0829994085329162,
    "robust.offline": 1,
    "robust.stale": 1,
    "robust.overlap": 1,
@@ -38409,7 +38791,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "records.onb": 1.0,
    "records.tree": 1.0,
    "records.audit": 1.0,
-   "records.phone": 0.5,
+   "records.phone": 0.75,
    "verify.mutants": 1.0,
    "verify.ledger": 1.0,
    "verify.numbers": 1,
@@ -38418,6 +38800,2367 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "verify.missing": 1,
    "verify.hash": 1,
    "verify.raw": 1
+  },
+  "previous_runtime_sha256": "2ecfe60effc082a173d40390fbccbf707de634ae07cc27c2bdf851b5ae8e8bb1",
+  "motion": {
+   "instrument": {
+    "capture": "42ecf3865b6ae96368e3a7761c34104daa7d9145ff818be5459532d2c8c99f8f",
+    "pixels": "18ed868dcbf1aee2d41aa48afb08c03aa5dd8a208cda29e07ccf17d02f8cbd8b",
+    "assets": "fec1a37b960d9f5eb4646576e4ddf87aae898c8c4b5f5a17b9c366a7a6426ecf",
+    "rules": "83a9cc88815ed388d04bc4e946a90caa2b721c05ff4c35a19609639e7567dead",
+    "reference": "c737c5ba136822105e66efc6be26e7bd7dd53cdb36a9aee3020c683e23ba2170"
+   },
+   "reference": {
+    "normal": {
+     "background": {
+      "pixels": 66703,
+      "steps": [
+       [
+        308,
+        53671
+       ],
+       [
+        429,
+        47745
+       ],
+       [
+        533,
+        37552
+       ],
+       [
+        682,
+        44986
+       ],
+       [
+        818,
+        38507
+       ],
+       [
+        1029,
+        46633
+       ],
+       [
+        1172,
+        58420
+       ],
+       [
+        1303,
+        56531
+       ],
+       [
+        1409,
+        49510
+       ],
+       [
+        1549,
+        48126
+       ],
+       [
+        1677,
+        29099
+       ],
+       [
+        1781,
+        26710
+       ],
+       [
+        1911,
+        35728
+       ],
+       [
+        2041,
+        49405
+       ],
+       [
+        2177,
+        47218
+       ],
+       [
+        2294,
+        52291
+       ],
+       [
+        2432,
+        38528
+       ],
+       [
+        2538,
+        25829
+       ],
+       [
+        2664,
+        37314
+       ],
+       [
+        2805,
+        48880
+       ],
+       [
+        2931,
+        55045
+       ],
+       [
+        3046,
+        48694
+       ],
+       [
+        3171,
+        52076
+       ],
+       [
+        3302,
+        42851
+       ],
+       [
+        3414,
+        18339
+       ],
+       [
+        3540,
+        34828
+       ],
+       [
+        3680,
+        47706
+       ],
+       [
+        3787,
+        49679
+       ],
+       [
+        3916,
+        55815
+       ],
+       [
+        4034,
+        44460
+       ],
+       [
+        4171,
+        38403
+       ],
+       [
+        4298,
+        29974
+       ],
+       [
+        4421,
+        27669
+       ],
+       [
+        4541,
+        50456
+       ],
+       [
+        4671,
+        22944
+       ],
+       [
+        4795,
+        42162
+       ],
+       [
+        4908,
+        16540
+       ],
+       [
+        5065,
+        39878
+       ],
+       [
+        5292,
+        56953
+       ],
+       [
+        5423,
+        55177
+       ],
+       [
+        5563,
+        61555
+       ],
+       [
+        5806,
+        61755
+       ],
+       [
+        5918,
+        35786
+       ],
+       [
+        6060,
+        48860
+       ],
+       [
+        6169,
+        55678
+       ],
+       [
+        6306,
+        56663
+       ],
+       [
+        6426,
+        50097
+       ],
+       [
+        6542,
+        43326
+       ],
+       [
+        6673,
+        44632
+       ],
+       [
+        6809,
+        18681
+       ],
+       [
+        6920,
+        44424
+       ],
+       [
+        7037,
+        44873
+       ],
+       [
+        7176,
+        49449
+       ],
+       [
+        7292,
+        37788
+       ],
+       [
+        7417,
+        29189
+       ],
+       [
+        7544,
+        37695
+       ],
+       [
+        7671,
+        44087
+       ],
+       [
+        7784,
+        27395
+       ],
+       [
+        7908,
+        51348
+       ],
+       [
+        8057,
+        53196
+       ],
+       [
+        8175,
+        53872
+       ],
+       [
+        8328,
+        48414
+       ],
+       [
+        8546,
+        49282
+       ]
+      ]
+     },
+     "title": {
+      "pixels": 378,
+      "steps": [
+       [
+        308,
+        64
+       ],
+       [
+        429,
+        82
+       ],
+       [
+        533,
+        102
+       ],
+       [
+        682,
+        235
+       ],
+       [
+        818,
+        260
+       ],
+       [
+        1029,
+        326
+       ],
+       [
+        1172,
+        302
+       ],
+       [
+        1303,
+        235
+       ],
+       [
+        1409,
+        189
+       ],
+       [
+        1549,
+        203
+       ],
+       [
+        1677,
+        50
+       ],
+       [
+        1781,
+        17
+       ],
+       [
+        1911,
+        33
+       ],
+       [
+        2041,
+        49
+       ],
+       [
+        2177,
+        34
+       ],
+       [
+        2294,
+        64
+       ],
+       [
+        2432,
+        48
+       ],
+       [
+        2538,
+        88
+       ],
+       [
+        2664,
+        228
+       ],
+       [
+        2805,
+        169
+       ],
+       [
+        2931,
+        155
+       ],
+       [
+        3046,
+        260
+       ],
+       [
+        3171,
+        270
+       ],
+       [
+        3302,
+        271
+       ],
+       [
+        3414,
+        142
+       ],
+       [
+        3540,
+        211
+       ],
+       [
+        3680,
+        71
+       ],
+       [
+        3787,
+        53
+       ],
+       [
+        3916,
+        32
+       ],
+       [
+        4034,
+        0
+       ],
+       [
+        4171,
+        1
+       ],
+       [
+        4298,
+        0
+       ],
+       [
+        4421,
+        31
+       ],
+       [
+        4541,
+        135
+       ],
+       [
+        4671,
+        128
+       ],
+       [
+        4795,
+        285
+       ],
+       [
+        4908,
+        145
+       ],
+       [
+        5065,
+        378
+       ],
+       [
+        5292,
+        84
+       ],
+       [
+        5423,
+        32
+       ],
+       [
+        5563,
+        137
+       ],
+       [
+        5806,
+        301
+       ],
+       [
+        5918,
+        208
+       ],
+       [
+        6060,
+        307
+       ],
+       [
+        6169,
+        293
+       ],
+       [
+        6306,
+        216
+       ],
+       [
+        6426,
+        163
+       ],
+       [
+        6542,
+        186
+       ],
+       [
+        6673,
+        111
+       ],
+       [
+        6809,
+        4
+       ],
+       [
+        6920,
+        34
+       ],
+       [
+        7037,
+        0
+       ],
+       [
+        7176,
+        0
+       ],
+       [
+        7292,
+        29
+       ],
+       [
+        7417,
+        27
+       ],
+       [
+        7544,
+        153
+       ],
+       [
+        7671,
+        238
+       ],
+       [
+        7784,
+        127
+       ],
+       [
+        7908,
+        211
+       ],
+       [
+        8057,
+        292
+       ],
+       [
+        8175,
+        209
+       ],
+       [
+        8328,
+        260
+       ],
+       [
+        8546,
+        327
+       ]
+      ]
+     }
+    },
+    "reduce": {
+     "background": {
+      "pixels": 66703,
+      "steps": [
+       [
+        161,
+        0
+       ],
+       [
+        300,
+        44872
+       ],
+       [
+        420,
+        54133
+       ],
+       [
+        554,
+        56072
+       ],
+       [
+        678,
+        41095
+       ],
+       [
+        787,
+        3153
+       ],
+       [
+        923,
+        0
+       ],
+       [
+        1057,
+        32571
+       ],
+       [
+        1169,
+        54482
+       ],
+       [
+        1307,
+        61759
+       ],
+       [
+        1426,
+        58855
+       ],
+       [
+        1537,
+        48293
+       ],
+       [
+        1671,
+        10480
+       ],
+       [
+        1803,
+        6
+       ],
+       [
+        1928,
+        2544
+       ],
+       [
+        2049,
+        21531
+       ],
+       [
+        2178,
+        30864
+       ],
+       [
+        2311,
+        24946
+       ],
+       [
+        2416,
+        301
+       ],
+       [
+        2547,
+        1
+       ],
+       [
+        2672,
+        0
+       ],
+       [
+        2799,
+        46305
+       ],
+       [
+        2936,
+        56287
+       ],
+       [
+        3044,
+        39204
+       ],
+       [
+        3172,
+        46469
+       ],
+       [
+        3290,
+        17937
+       ],
+       [
+        3428,
+        0
+       ]
+      ]
+     },
+     "title": {
+      "pixels": 411,
+      "steps": [
+       [
+        161,
+        0
+       ],
+       [
+        300,
+        0
+       ],
+       [
+        420,
+        0
+       ],
+       [
+        554,
+        1
+       ],
+       [
+        678,
+        0
+       ],
+       [
+        787,
+        0
+       ],
+       [
+        923,
+        0
+       ],
+       [
+        1057,
+        0
+       ],
+       [
+        1169,
+        0
+       ],
+       [
+        1307,
+        15
+       ],
+       [
+        1426,
+        13
+       ],
+       [
+        1537,
+        0
+       ],
+       [
+        1671,
+        0
+       ],
+       [
+        1803,
+        0
+       ],
+       [
+        1928,
+        0
+       ],
+       [
+        2049,
+        0
+       ],
+       [
+        2178,
+        3
+       ],
+       [
+        2311,
+        0
+       ],
+       [
+        2416,
+        0
+       ],
+       [
+        2547,
+        0
+       ],
+       [
+        2672,
+        0
+       ],
+       [
+        2799,
+        0
+       ],
+       [
+        2936,
+        0
+       ],
+       [
+        3044,
+        0
+       ],
+       [
+        3172,
+        0
+       ],
+       [
+        3290,
+        0
+       ],
+       [
+        3428,
+        0
+       ]
+      ]
+     }
+    }
+   },
+   "parent": "cea9d5cb6830de16b8a71eed7b4338acd3d9b6dc73e097fad12015287f05e575",
+   "before": {
+    "normal": {
+     "background": {
+      "pixels": 51043,
+      "steps": [
+       [
+        142,
+        0
+       ],
+       [
+        267,
+        0
+       ],
+       [
+        392,
+        0
+       ],
+       [
+        518,
+        0
+       ],
+       [
+        642,
+        0
+       ],
+       [
+        767,
+        0
+       ],
+       [
+        892,
+        0
+       ],
+       [
+        1017,
+        0
+       ],
+       [
+        1142,
+        0
+       ],
+       [
+        1267,
+        0
+       ],
+       [
+        1392,
+        0
+       ],
+       [
+        1517,
+        0
+       ],
+       [
+        1642,
+        0
+       ],
+       [
+        1767,
+        0
+       ],
+       [
+        1892,
+        0
+       ],
+       [
+        2017,
+        0
+       ],
+       [
+        2142,
+        0
+       ],
+       [
+        2267,
+        0
+       ],
+       [
+        2392,
+        0
+       ],
+       [
+        2518,
+        0
+       ],
+       [
+        2642,
+        0
+       ],
+       [
+        2767,
+        0
+       ],
+       [
+        2892,
+        0
+       ],
+       [
+        3017,
+        0
+       ],
+       [
+        3142,
+        0
+       ],
+       [
+        3267,
+        0
+       ],
+       [
+        3392,
+        0
+       ],
+       [
+        3518,
+        0
+       ],
+       [
+        3643,
+        0
+       ],
+       [
+        3767,
+        0
+       ],
+       [
+        3892,
+        0
+       ],
+       [
+        4017,
+        0
+       ],
+       [
+        4142,
+        0
+       ],
+       [
+        4267,
+        0
+       ],
+       [
+        4392,
+        0
+       ],
+       [
+        4517,
+        0
+       ],
+       [
+        4642,
+        0
+       ],
+       [
+        4767,
+        0
+       ],
+       [
+        4891,
+        0
+       ],
+       [
+        5017,
+        0
+       ],
+       [
+        5142,
+        0
+       ],
+       [
+        5267,
+        0
+       ],
+       [
+        5392,
+        0
+       ],
+       [
+        5518,
+        0
+       ],
+       [
+        5642,
+        0
+       ],
+       [
+        5767,
+        0
+       ],
+       [
+        5892,
+        0
+       ],
+       [
+        6017,
+        0
+       ],
+       [
+        6142,
+        0
+       ],
+       [
+        6267,
+        0
+       ],
+       [
+        6391,
+        0
+       ],
+       [
+        6517,
+        0
+       ],
+       [
+        6642,
+        0
+       ],
+       [
+        6767,
+        0
+       ],
+       [
+        6892,
+        0
+       ],
+       [
+        7017,
+        0
+       ],
+       [
+        7142,
+        0
+       ],
+       [
+        7267,
+        0
+       ],
+       [
+        7392,
+        0
+       ],
+       [
+        7517,
+        0
+       ],
+       [
+        7642,
+        0
+       ],
+       [
+        7767,
+        0
+       ],
+       [
+        7892,
+        0
+       ],
+       [
+        8017,
+        0
+       ],
+       [
+        8142,
+        0
+       ],
+       [
+        8267,
+        0
+       ],
+       [
+        8392,
+        0
+       ],
+       [
+        8517,
+        0
+       ]
+      ]
+     },
+     "title": {
+      "pixels": 628,
+      "steps": [
+       [
+        142,
+        0
+       ],
+       [
+        267,
+        0
+       ],
+       [
+        392,
+        0
+       ],
+       [
+        518,
+        0
+       ],
+       [
+        642,
+        0
+       ],
+       [
+        767,
+        0
+       ],
+       [
+        892,
+        0
+       ],
+       [
+        1017,
+        0
+       ],
+       [
+        1142,
+        0
+       ],
+       [
+        1267,
+        0
+       ],
+       [
+        1392,
+        0
+       ],
+       [
+        1517,
+        0
+       ],
+       [
+        1642,
+        0
+       ],
+       [
+        1767,
+        0
+       ],
+       [
+        1892,
+        0
+       ],
+       [
+        2017,
+        0
+       ],
+       [
+        2142,
+        0
+       ],
+       [
+        2267,
+        0
+       ],
+       [
+        2392,
+        0
+       ],
+       [
+        2518,
+        0
+       ],
+       [
+        2642,
+        0
+       ],
+       [
+        2767,
+        0
+       ],
+       [
+        2892,
+        0
+       ],
+       [
+        3017,
+        0
+       ],
+       [
+        3142,
+        0
+       ],
+       [
+        3267,
+        0
+       ],
+       [
+        3392,
+        0
+       ],
+       [
+        3518,
+        0
+       ],
+       [
+        3643,
+        0
+       ],
+       [
+        3767,
+        0
+       ],
+       [
+        3892,
+        0
+       ],
+       [
+        4017,
+        0
+       ],
+       [
+        4142,
+        0
+       ],
+       [
+        4267,
+        0
+       ],
+       [
+        4392,
+        0
+       ],
+       [
+        4517,
+        0
+       ],
+       [
+        4642,
+        0
+       ],
+       [
+        4767,
+        0
+       ],
+       [
+        4891,
+        0
+       ],
+       [
+        5017,
+        0
+       ],
+       [
+        5142,
+        0
+       ],
+       [
+        5267,
+        0
+       ],
+       [
+        5392,
+        0
+       ],
+       [
+        5518,
+        0
+       ],
+       [
+        5642,
+        0
+       ],
+       [
+        5767,
+        0
+       ],
+       [
+        5892,
+        0
+       ],
+       [
+        6017,
+        0
+       ],
+       [
+        6142,
+        0
+       ],
+       [
+        6267,
+        0
+       ],
+       [
+        6391,
+        0
+       ],
+       [
+        6517,
+        0
+       ],
+       [
+        6642,
+        0
+       ],
+       [
+        6767,
+        0
+       ],
+       [
+        6892,
+        0
+       ],
+       [
+        7017,
+        0
+       ],
+       [
+        7142,
+        0
+       ],
+       [
+        7267,
+        0
+       ],
+       [
+        7392,
+        0
+       ],
+       [
+        7517,
+        0
+       ],
+       [
+        7642,
+        0
+       ],
+       [
+        7767,
+        0
+       ],
+       [
+        7892,
+        0
+       ],
+       [
+        8017,
+        0
+       ],
+       [
+        8142,
+        0
+       ],
+       [
+        8267,
+        0
+       ],
+       [
+        8392,
+        0
+       ],
+       [
+        8517,
+        0
+       ]
+      ]
+     }
+    },
+    "reduce": {
+     "background": {
+      "pixels": 51043,
+      "steps": [
+       [
+        140,
+        0
+       ],
+       [
+        265,
+        0
+       ],
+       [
+        396,
+        0
+       ],
+       [
+        522,
+        0
+       ],
+       [
+        648,
+        0
+       ],
+       [
+        772,
+        0
+       ],
+       [
+        895,
+        0
+       ],
+       [
+        1020,
+        0
+       ],
+       [
+        1142,
+        0
+       ],
+       [
+        1266,
+        0
+       ],
+       [
+        1393,
+        0
+       ],
+       [
+        1521,
+        0
+       ],
+       [
+        1645,
+        0
+       ],
+       [
+        1772,
+        0
+       ],
+       [
+        1895,
+        0
+       ],
+       [
+        2022,
+        0
+       ],
+       [
+        2147,
+        0
+       ],
+       [
+        2270,
+        0
+       ],
+       [
+        2390,
+        0
+       ],
+       [
+        2522,
+        0
+       ],
+       [
+        2647,
+        0
+       ],
+       [
+        2773,
+        0
+       ],
+       [
+        2897,
+        0
+       ],
+       [
+        3022,
+        0
+       ],
+       [
+        3147,
+        0
+       ],
+       [
+        3265,
+        0
+       ],
+       [
+        3394,
+        0
+       ]
+      ]
+     },
+     "title": {
+      "pixels": 628,
+      "steps": [
+       [
+        140,
+        0
+       ],
+       [
+        265,
+        0
+       ],
+       [
+        396,
+        0
+       ],
+       [
+        522,
+        0
+       ],
+       [
+        648,
+        0
+       ],
+       [
+        772,
+        0
+       ],
+       [
+        895,
+        0
+       ],
+       [
+        1020,
+        0
+       ],
+       [
+        1142,
+        0
+       ],
+       [
+        1266,
+        0
+       ],
+       [
+        1393,
+        0
+       ],
+       [
+        1521,
+        0
+       ],
+       [
+        1645,
+        0
+       ],
+       [
+        1772,
+        0
+       ],
+       [
+        1895,
+        0
+       ],
+       [
+        2022,
+        0
+       ],
+       [
+        2147,
+        0
+       ],
+       [
+        2270,
+        0
+       ],
+       [
+        2390,
+        0
+       ],
+       [
+        2522,
+        0
+       ],
+       [
+        2647,
+        0
+       ],
+       [
+        2773,
+        0
+       ],
+       [
+        2897,
+        0
+       ],
+       [
+        3022,
+        0
+       ],
+       [
+        3147,
+        0
+       ],
+       [
+        3265,
+        0
+       ],
+       [
+        3394,
+        0
+       ]
+      ]
+     }
+    },
+    "assets": {
+     "app.css": "5d442c22213b545048fc260254cafc7eee73e3a67f8234ea0e861ab427f86209",
+     "look-home.css": "2a1671cb7b216b0ab10471a15ea2f410a711486c020bcd96aa6ab4f4dce08975",
+     "look-calendar.css": "ce849c90bc8ec101c150eb0d16ae0385e003841c1d05aab61680bca6c988c46c",
+     "look-order.css": "08335cf3398d9f78ec7d813a25e3fee1556fdbb80d30560dfdd93e4cffb33b2f",
+     "look-team.css": "e0fe3cd4ea4d8fe1c3c8f1ea24aa92a2bdae9f2558c35b43fe0b357141e819ab",
+     "look-records.css": "e5396fa4fbd3645f0bd28ab175c3abc99c334436c0a2a881165ebf452ccd167e",
+     "colour.css": "2e92fab599f9800a766b350b27cc54d3aed14207c65dbede84465cb305252ea7",
+     "swarm.css": "12ee29f0d12215967f7344727b0d8af6fd3af24f4f87ce8e321035b0074c7bad",
+     "icons.js": "af958d0b8fd32168a1d2db3a4450927cf3d20c1fd2eb4d0dc559f4d64820fc1b",
+     "status.js": "ea2b20db35b62d8b21432a95f54fe2b4ce0b8372969d8e6763b515c695a5ee5d",
+     "board.js": "e9f6c686b67852bb6838dbfcaf06a64385cf6ed44f2d03f10d67b6b93cf509ed",
+     "swarm.js": "d4cb9c903f61abd152e9990f31d46dc93779e6f2eb2b2fe200aa9b11754a7538",
+     "app.js": "10197c26491b394c131268b4d62255669783cd5d17b75bb849bfe4cc11a01e57"
+    },
+    "runtime": "2ecfe60effc082a173d40390fbccbf707de634ae07cc27c2bdf851b5ae8e8bb1"
+   },
+   "after": {
+    "normal": {
+     "background": {
+      "pixels": 50669,
+      "steps": [
+       [
+        152,
+        11288
+       ],
+       [
+        277,
+        17731
+       ],
+       [
+        402,
+        17644
+       ],
+       [
+        526,
+        18679
+       ],
+       [
+        652,
+        19782
+       ],
+       [
+        776,
+        23999
+       ],
+       [
+        903,
+        34994
+       ],
+       [
+        1028,
+        39416
+       ],
+       [
+        1152,
+        38498
+       ],
+       [
+        1277,
+        34963
+       ],
+       [
+        1401,
+        31130
+       ],
+       [
+        1527,
+        27691
+       ],
+       [
+        1650,
+        18919
+       ],
+       [
+        1776,
+        13842
+       ],
+       [
+        1903,
+        30201
+       ],
+       [
+        2026,
+        37975
+       ],
+       [
+        2150,
+        39774
+       ],
+       [
+        2276,
+        40472
+       ],
+       [
+        2399,
+        41338
+       ],
+       [
+        2526,
+        42306
+       ],
+       [
+        2651,
+        42157
+       ],
+       [
+        2775,
+        32188
+       ],
+       [
+        2902,
+        12050
+       ],
+       [
+        3029,
+        1889
+       ],
+       [
+        3152,
+        332
+       ],
+       [
+        3274,
+        853
+       ],
+       [
+        3402,
+        12474
+       ],
+       [
+        3526,
+        33272
+       ],
+       [
+        3651,
+        42190
+       ],
+       [
+        3777,
+        41611
+       ],
+       [
+        3901,
+        41091
+       ],
+       [
+        4027,
+        40563
+       ],
+       [
+        4149,
+        37391
+       ],
+       [
+        4276,
+        30046
+       ],
+       [
+        4401,
+        10968
+       ],
+       [
+        4526,
+        0
+       ],
+       [
+        4652,
+        7515
+       ],
+       [
+        4776,
+        24368
+       ],
+       [
+        4902,
+        35277
+       ],
+       [
+        5026,
+        39593
+       ],
+       [
+        5151,
+        40961
+       ],
+       [
+        5276,
+        40873
+       ],
+       [
+        5401,
+        40737
+       ],
+       [
+        5525,
+        32180
+       ],
+       [
+        5651,
+        18181
+       ],
+       [
+        5776,
+        10649
+       ],
+       [
+        5901,
+        5334
+       ],
+       [
+        6026,
+        6551
+       ],
+       [
+        6152,
+        13659
+       ],
+       [
+        6276,
+        28530
+       ],
+       [
+        6401,
+        40765
+       ],
+       [
+        6527,
+        42142
+       ],
+       [
+        6652,
+        41344
+       ],
+       [
+        6776,
+        40796
+       ],
+       [
+        6900,
+        40071
+       ],
+       [
+        7026,
+        40562
+       ],
+       [
+        7152,
+        37546
+       ],
+       [
+        7278,
+        31655
+       ],
+       [
+        7402,
+        27214
+       ],
+       [
+        7526,
+        27270
+       ],
+       [
+        7651,
+        28353
+       ],
+       [
+        7777,
+        29059
+       ],
+       [
+        7902,
+        30951
+       ],
+       [
+        8027,
+        32549
+       ],
+       [
+        8157,
+        29106
+       ],
+       [
+        8276,
+        22181
+       ],
+       [
+        8401,
+        21764
+       ],
+       [
+        8526,
+        23330
+       ]
+      ]
+     },
+     "title": {
+      "pixels": 628,
+      "steps": [
+       [
+        152,
+        340
+       ],
+       [
+        277,
+        493
+       ],
+       [
+        402,
+        522
+       ],
+       [
+        526,
+        514
+       ],
+       [
+        652,
+        447
+       ],
+       [
+        776,
+        516
+       ],
+       [
+        903,
+        510
+       ],
+       [
+        1028,
+        538
+       ],
+       [
+        1152,
+        549
+       ],
+       [
+        1277,
+        577
+       ],
+       [
+        1401,
+        584
+       ],
+       [
+        1527,
+        597
+       ],
+       [
+        1650,
+        581
+       ],
+       [
+        1776,
+        589
+       ],
+       [
+        1903,
+        612
+       ],
+       [
+        2026,
+        606
+       ],
+       [
+        2150,
+        613
+       ],
+       [
+        2276,
+        621
+       ],
+       [
+        2399,
+        612
+       ],
+       [
+        2526,
+        616
+       ],
+       [
+        2651,
+        568
+       ],
+       [
+        2775,
+        599
+       ],
+       [
+        2902,
+        609
+       ],
+       [
+        3029,
+        595
+       ],
+       [
+        3152,
+        607
+       ],
+       [
+        3274,
+        593
+       ],
+       [
+        3402,
+        584
+       ],
+       [
+        3526,
+        481
+       ],
+       [
+        3651,
+        438
+       ],
+       [
+        3777,
+        376
+       ],
+       [
+        3901,
+        134
+       ],
+       [
+        4027,
+        0
+       ],
+       [
+        4149,
+        0
+       ],
+       [
+        4276,
+        225
+       ],
+       [
+        4401,
+        383
+       ],
+       [
+        4526,
+        460
+       ],
+       [
+        4652,
+        491
+       ],
+       [
+        4776,
+        589
+       ],
+       [
+        4902,
+        595
+       ],
+       [
+        5026,
+        603
+       ],
+       [
+        5151,
+        593
+       ],
+       [
+        5276,
+        612
+       ],
+       [
+        5401,
+        595
+       ],
+       [
+        5525,
+        569
+       ],
+       [
+        5651,
+        618
+       ],
+       [
+        5776,
+        618
+       ],
+       [
+        5901,
+        627
+       ],
+       [
+        6026,
+        613
+       ],
+       [
+        6152,
+        603
+       ],
+       [
+        6276,
+        614
+       ],
+       [
+        6401,
+        587
+       ],
+       [
+        6527,
+        586
+       ],
+       [
+        6652,
+        588
+       ],
+       [
+        6776,
+        588
+       ],
+       [
+        6900,
+        579
+       ],
+       [
+        7026,
+        555
+       ],
+       [
+        7152,
+        532
+       ],
+       [
+        7278,
+        503
+       ],
+       [
+        7402,
+        449
+       ],
+       [
+        7526,
+        340
+       ],
+       [
+        7651,
+        114
+       ],
+       [
+        7777,
+        53
+       ],
+       [
+        7902,
+        22
+       ],
+       [
+        8027,
+        0
+       ],
+       [
+        8157,
+        1
+       ],
+       [
+        8276,
+        34
+       ],
+       [
+        8401,
+        54
+       ],
+       [
+        8526,
+        179
+       ]
+      ]
+     }
+    },
+    "reduce": {
+     "background": {
+      "pixels": 51043,
+      "steps": [
+       [
+        143,
+        0
+       ],
+       [
+        267,
+        0
+       ],
+       [
+        394,
+        0
+       ],
+       [
+        518,
+        0
+       ],
+       [
+        643,
+        0
+       ],
+       [
+        768,
+        0
+       ],
+       [
+        898,
+        0
+       ],
+       [
+        1026,
+        0
+       ],
+       [
+        1151,
+        0
+       ],
+       [
+        1273,
+        0
+       ],
+       [
+        1394,
+        0
+       ],
+       [
+        1517,
+        0
+       ],
+       [
+        1645,
+        0
+       ],
+       [
+        1768,
+        0
+       ],
+       [
+        1897,
+        0
+       ],
+       [
+        2018,
+        0
+       ],
+       [
+        2145,
+        0
+       ],
+       [
+        2269,
+        0
+       ],
+       [
+        2394,
+        0
+       ],
+       [
+        2534,
+        0
+       ],
+       [
+        2644,
+        0
+       ],
+       [
+        2780,
+        0
+       ],
+       [
+        2898,
+        0
+       ],
+       [
+        3026,
+        0
+       ],
+       [
+        3145,
+        0
+       ],
+       [
+        3269,
+        0
+       ],
+       [
+        3394,
+        0
+       ]
+      ]
+     },
+     "title": {
+      "pixels": 627,
+      "steps": [
+       [
+        143,
+        0
+       ],
+       [
+        267,
+        0
+       ],
+       [
+        394,
+        0
+       ],
+       [
+        518,
+        0
+       ],
+       [
+        643,
+        0
+       ],
+       [
+        768,
+        0
+       ],
+       [
+        898,
+        0
+       ],
+       [
+        1026,
+        0
+       ],
+       [
+        1151,
+        0
+       ],
+       [
+        1273,
+        0
+       ],
+       [
+        1394,
+        0
+       ],
+       [
+        1517,
+        0
+       ],
+       [
+        1645,
+        0
+       ],
+       [
+        1768,
+        0
+       ],
+       [
+        1897,
+        0
+       ],
+       [
+        2018,
+        0
+       ],
+       [
+        2145,
+        0
+       ],
+       [
+        2269,
+        0
+       ],
+       [
+        2394,
+        0
+       ],
+       [
+        2534,
+        0
+       ],
+       [
+        2644,
+        0
+       ],
+       [
+        2780,
+        0
+       ],
+       [
+        2898,
+        0
+       ],
+       [
+        3026,
+        0
+       ],
+       [
+        3145,
+        0
+       ],
+       [
+        3269,
+        0
+       ],
+       [
+        3394,
+        0
+       ]
+      ]
+     }
+    },
+    "assets": {
+     "app.css": "5d442c22213b545048fc260254cafc7eee73e3a67f8234ea0e861ab427f86209",
+     "look-home.css": "2a1671cb7b216b0ab10471a15ea2f410a711486c020bcd96aa6ab4f4dce08975",
+     "look-calendar.css": "ce849c90bc8ec101c150eb0d16ae0385e003841c1d05aab61680bca6c988c46c",
+     "look-order.css": "08335cf3398d9f78ec7d813a25e3fee1556fdbb80d30560dfdd93e4cffb33b2f",
+     "look-team.css": "e0fe3cd4ea4d8fe1c3c8f1ea24aa92a2bdae9f2558c35b43fe0b357141e819ab",
+     "look-records.css": "e5396fa4fbd3645f0bd28ab175c3abc99c334436c0a2a881165ebf452ccd167e",
+     "colour.css": "d7bbde2a94e695b8064c01e2342aa69bdfec1f8dba604544306d92518e05dc85",
+     "swarm.css": "12ee29f0d12215967f7344727b0d8af6fd3af24f4f87ce8e321035b0074c7bad",
+     "icons.js": "af958d0b8fd32168a1d2db3a4450927cf3d20c1fd2eb4d0dc559f4d64820fc1b",
+     "status.js": "ea2b20db35b62d8b21432a95f54fe2b4ce0b8372969d8e6763b515c695a5ee5d",
+     "board.js": "e9f6c686b67852bb6838dbfcaf06a64385cf6ed44f2d03f10d67b6b93cf509ed",
+     "swarm.js": "d4cb9c903f61abd152e9990f31d46dc93779e6f2eb2b2fe200aa9b11754a7538",
+     "app.js": "e24f7be1f139f3bdefc7174160883bad689761c1deadb738e0091193c9e4d23d"
+    },
+    "runtime": "5cb2504c4dfd5788fb928101caffb7bd8bab78d8c64317fe57a707ed87045898"
+   }
   }
  }
 }
@@ -40304,7 +43047,7 @@ e5f65a07bf3e9d03ec5fb039b43131128b00799cc9e7e748858a48a4179db521 tests/format/sp
 f1e5b71a65e07c1543f4cd94912d1b4b570c03f900915e184cccbbb6d48f3307 tests/page_closing_audit.js
 1e65ea51d2007249987209966d57b51914de409b68dcf868b4fff974a8a4e52c tests/page_geometry.js
 931dd3784a3573e82fa1db1b8fcad02f99a2f5ab517df20ac8b031928c416918 tests/page_graph_checks.js
-5e5ea45cfb8c1d09cd289ac96d5dc2ddcce84c279266a5099ba9b516fc831947 tests/page_harness.js
+56fe1f20bad63c193cf204bedf5b5c3018ae349f50aad4ff65dc65e226b6a3a2 tests/page_harness.js
 0e652baf84648da4b6f303b2108477db82c0505ca79914ef9a6b5d1a29acb07d tests/page_home_regressions.js
 7417f2d3ae672f622ee3c03c6b07cc59f3393a6d92ee9b28583d3c58f29e7df6 tests/page_ink_system.js
 280caa764155fd91977c4b5a551004ae074983873851f043bd95b97ffc6a6617 tests/page_library_loop.js
@@ -40334,7 +43077,7 @@ a18f48aebf070c1c7ac81725b5ad439c963ebe0e22b66fc6532210f619b8153e tests/test_hero
 565100599cb1a29235a27045fc12f5acbc5318271c09f13aa3510f4bc7f8a144 tests/test_order_index.py
 df4b5633983fce34c81e2c3385100d96bdedc9a81be1b73f31aeee976e3c6432 tests/test_page.py
 4826894556323d4050a421c94cb66c11e26ba5a1074984085343f00337529a42 tests/test_privacy.py
-315ef332e0e553da464d5d7d40f7265b8e6f8d728978db05ac5d08412cd029cc tests/test_quality.py
+4f719bf2ed39d5ecd54efd0be28856655bd68127a2690302c779c81a66cfbde3 tests/test_quality.py
 ab4f8a5ed6d2420f63d68debcb4dd09e481e46601a6a9e3116a79ef58e386c9a tests/test_status.py
 c07d750095b481eff99d16cbfb38bee58f24922a931504225ae55c6f0ba43897 tests/test_status_scenes.py
 69d8670990d6cdf6a3ea2cd33faef0d95ea1f74a4be3de9c5af69522572d63ad tests/test_workgroups.py
@@ -40342,7 +43085,7 @@ aa002153428c9623125975a513b1f75b0d5c8a9b58590eb401195bcc800833f6 tests/ui_motion
 01b5c6d36f84320ac0a7daf4d1d341d42ac3d2387b71abfeb7f8eedcedbe9386 tools/make_icons.py
 9caa88746c089ed3d2ae09328398e2980453f441f9d59d12006a2294354bdb69 tools/make_oneshot.py
 c21d10529e82e5ca8a3d6fe309192fbe118e8e8c09656c0358d9181937a17852 tools/privacy_scan.py
-b5c8e154cc8c3c4a7c05f5487609c07e98d584a056a8d965d1816fe30c3ea133 tools/quality.py
+552ae155cc7ad64f209b211c598df5fc96c633522adbdb7042ebbd36cd9d902b tools/quality.py
 79ca5554a124efe17efdfad8188737974c97c35b334870c55819317f65ecd34f tools/quality_browser.py
 b8bda0d1b25e9d96b39f5252f79152db9d6aa6e6dcb7e9af87a40f52e6b1ea8d tools/quality_browser_probe.js
 edabc8ce7d7bf61d4ecd36c6af60f1f2b85aa7a8a1e1c16c8e4402dc80f8adb3 tools/quality_browser_spec.json
@@ -40351,18 +43094,18 @@ edabc8ce7d7bf61d4ecd36c6af60f1f2b85aa7a8a1e1c16c8e4402dc80f8adb3 tools/quality_b
 299dbc95507d6d081c4b188a7841bdc228a37aec4f193d1de235945087256a77 tools/quality_policy.json
 0bf27d88366d574fe48425f4b2db3b2549de673640d828c898d0f468f64c8e28 tools/quality_v1.sha256
 5d442c22213b545048fc260254cafc7eee73e3a67f8234ea0e861ab427f86209 web/app.css
-10197c26491b394c131268b4d62255669783cd5d17b75bb849bfe4cc11a01e57 web/app.js
+e24f7be1f139f3bdefc7174160883bad689761c1deadb738e0091193c9e4d23d web/app.js
 e9f6c686b67852bb6838dbfcaf06a64385cf6ed44f2d03f10d67b6b93cf509ed web/board.js
-2e92fab599f9800a766b350b27cc54d3aed14207c65dbede84465cb305252ea7 web/colour.css
+d7bbde2a94e695b8064c01e2342aa69bdfec1f8dba604544306d92518e05dc85 web/colour.css
 2219b6976077d91c736e260e16f223f406772bfbf78781923c231f85b1adbcde web/format.mjs
 af958d0b8fd32168a1d2db3a4450927cf3d20c1fd2eb4d0dc559f4d64820fc1b web/icons.js
-578c04e790f396c6055893d844cf453c55f2df5c3ba578a87f2df758ba92a002 web/index.html
+94a2bafd0d0bb8be88a3f84f099e32c9c85d660748fc32fc121173a34a5518ae web/index.html
 ce849c90bc8ec101c150eb0d16ae0385e003841c1d05aab61680bca6c988c46c web/look-calendar.css
 2a1671cb7b216b0ab10471a15ea2f410a711486c020bcd96aa6ab4f4dce08975 web/look-home.css
 08335cf3398d9f78ec7d813a25e3fee1556fdbb80d30560dfdd93e4cffb33b2f web/look-order.css
 e5396fa4fbd3645f0bd28ab175c3abc99c334436c0a2a881165ebf452ccd167e web/look-records.css
 e0fe3cd4ea4d8fe1c3c8f1ea24aa92a2bdae9f2558c35b43fe0b357141e819ab web/look-team.css
-fbc58aa649984d43e801e3a578d565939c96b507d4fcd4b2ae2438108ca6b82d web/quality-data.json
+dff3ffda6a17e2add48743971f943a3bcc80784ce7a7681b698557d02c985433 web/quality-data.json
 2f48c86410f410a49509f82dd55defe7999f0ae4b586a8af3b76a9ea24cdf3b0 web/quality.css
 9f6274322ba2642e9eeaebe3751e9dd013e8700f720e73571755f621e9c82db9 web/quality.html
 4dbbba02c54ee09eeed687b4030f8c80ae72e0948b0df2efa1d14a3deb5c6383 web/quality.js
