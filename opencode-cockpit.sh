@@ -9638,7 +9638,35 @@ async function assertComputedRgbViews() {
   if (blue.size !== 1) throw Error('Connector and arrow colours differ: ' + [...blue]);
   return {passed: true, report, connector: [...blue][0]};
 }
-if (typeof require !== 'function') { window.assertComputedRgbViews = assertComputedRgbViews; return; }
+// Exercise the actual top-layer dialog. The existing compose form must survive
+// a cancelled draft without losing its fields or submit handler.
+async function assertComposePanel() {
+  if (location.hostname !== '127.0.0.1') throw Error('Use a local Home fixture');
+  const opener = document.querySelector('#home-day-link [data-hero-action]');
+  const form = document.getElementById('compose-form');
+  const field = form.querySelector('textarea');
+  const home = form.parentNode, saved = field.value;
+  opener.click();
+  const dialog = document.querySelector('dialog[data-panel=compose]');
+  if (!dialog?.open || !dialog.contains(form) || form.querySelector('input') !== document.activeElement) {
+    throw Error('Opening the composer must move the original form and focus its title');
+  }
+  field.value = 'Draft for the panel check';
+  dialog.dispatchEvent(new Event('cancel', {cancelable:true}));
+  const deadline = performance.now() + 1500;
+  while (dialog.isConnected && performance.now() < deadline) {
+    await new Promise(resolve => requestAnimationFrame(resolve));
+  }
+  const restored = form.parentNode === home && field.value === 'Draft for the panel check' && opener === document.activeElement;
+  field.value = saved;
+  if (!restored) throw Error('Closing the composer must restore the form, draft and opener focus');
+  return true;
+}
+if (typeof require !== 'function') {
+  window.assertComputedRgbViews = assertComputedRgbViews;
+  window.assertComposePanel = assertComposePanel;
+  return;
+}
 {
 /* A small DOM stand-in for application contracts. No browser, network or external package. */
 'use strict';
@@ -10341,6 +10369,12 @@ function assertEdgeEnds(container, kind) {
 function assertOrg(view, doc) {
   const tree = view.querySelector('[data-org]'), nodes = tree.querySelectorAll('[data-org-node]'), edges = tree.querySelectorAll('path[data-org-edge]');
   assertEdgeEnds(tree, 'org');
+  edges.forEach(edge => {
+    const mask = byId(edge.getAttribute('data-report-mask'));
+    assert.equal(edge.getAttribute('mask'), 'url(#' + mask.getAttribute('id') + ')');
+    assert.equal(mask.firstChild.getAttribute('d'), edge.getAttribute('d'), 'The animated reveal follows the measured connector');
+    assert.equal(mask.firstChild.getAttribute('data-report-ink'), edge.getAttribute('data-to'));
+  });
   assert.equal(nodes.length, doc.seats.length + 2); assert.equal(edges.length, nodes.length - 1);
   const boxes = Object.fromEntries(nodes.map(n => {
     const [x, y] = n.getAttribute('transform').match(/-?\d+(?:\.\d+)?/g).map(Number), rect = n.querySelector('rect');
@@ -11640,6 +11674,17 @@ async function assertKeyboardShortcuts() {
   const panel = teamView.querySelector('[data-seat-panel]');
   assert.equal(byId('team-drawings').children[0].querySelector('[data-seat-panel]'), panel, 'Original focus panel stays with its reporting tree');
   assertSeatFocus(teamView, null);
+  const levelsPanel = teamView.querySelector('[data-levels]');
+  const levelKeys = levelsPanel.querySelectorAll('button[data-level]');
+  levelKeys[2].focus(); levelKeys[2].press(' ');
+  assert.equal(levelKeys[2].getAttribute('aria-pressed'), 'true');
+  assert.deepEqual(levelsPanel.querySelectorAll('[data-level-slab]').map(slab => slab.getAttribute('data-level-lift')),
+    ['above', 'above', 'selected', 'below']);
+  levelKeys[2].press('ArrowUp');
+  assert.equal(document.activeElement, levelKeys[1]); assert.equal(levelKeys[1].getAttribute('aria-pressed'), 'true');
+  levelKeys[1].press('End'); assert.equal(levelKeys[3].getAttribute('aria-pressed'), 'true');
+  levelsPanel.querySelector('[data-level-slab="You"]').click();
+  assert.equal(levelKeys[0].getAttribute('aria-pressed'), 'true');
   const writerButton = teamView.querySelector('[data-select-seat="writer"]'); writerButton.focus(); writerButton.press('Enter');
   assertSeatFocus(teamView, 'writer'); assert.equal(document.activeElement, writerButton);
   assert.equal(teamView.querySelector('[data-canvas-node="agent:writer"]').getAttribute('aria-pressed'), 'true');
@@ -11654,6 +11699,8 @@ async function assertKeyboardShortcuts() {
   assert.deepEqual(stableNodes.map(e => e.attributeChanges.filter(k => ['data-dim','hidden','aria-pressed'].includes(k)).length), changes, 'Polling never removes and reapplies focus attributes');
   assert.deepEqual(panel.querySelectorAll('[data-seat-feed-item]'), feed);
   assert.equal(document.activeElement, writerButton);
+  assert.equal(levelsPanel.querySelector('button[data-level="You"]'), levelKeys[0]);
+  assert.equal(levelKeys[0].getAttribute('aria-pressed'), 'true', 'A poll preserves the chosen level');
   writerButton.press(' '); assertSeatFocus(teamView, null);
   writerButton.click(); assertSeatFocus(teamView, 'writer');
   teamView.querySelector('[data-select-seat="lead"]').click(); assertSeatFocus(teamView, 'lead');
@@ -12048,8 +12095,29 @@ async function assertKeyboardShortcuts() {
   detailStates[envelope.body.id] = 'SUCCEEDED'; await refresh();
   assert.equal(q('[data-view="order"]').getAttribute('data-state'), 'SUCCEEDED');
   history.runs.push({run: 'old-run', day: '2030-04-09', live: false}, {run: team.run, day: today, live: true});
+  const priorBoard = history.board;
+  history.board = (priorBoard || []).concat({run: 'old-run', tasks: [{id: 'overnight', title: 'Archive receipts',
+    issued_at: '2030-04-05T23:40:00+08:00', ended_at: '2030-04-07T03:10:00+08:00', state: 'SUCCEEDED'}]});
   await refresh();
   const library = await navigate('#/library', 'library');
+  byId('date-replay-open').click();
+  const dayPicker = byId('date-replay-select');
+  const replayDates = dayPicker.querySelectorAll('option').map(item => item.value);
+  assert.deepEqual(replayDates, ['2030-04-05', '2030-04-07', '2030-04-09', today]);
+  dayPicker.value = replayDates[0]; dayPicker.dispatch('change');
+  location.hash = '#/'; await flush();
+  assert.equal(byId('date-replay-title').textContent, '2030-04-05');
+  assert.match(byId('date-replay-content').textContent, /Archive receipts/);
+  assert.match(byId('date-replay-content').textContent, /Orders closed \(0\)/);
+  byId('date-replay-next').click();
+  assert.equal(dayPicker.value, '2030-04-07');
+  assert.match(byId('date-replay-content').textContent, /Orders closed \(1\)/);
+  location.hash = '#/library'; await flush();
+  assert.equal(dayPicker.value, '2030-04-07');
+  assert.match(byId('date-replay-content').textContent, /No library versions recorded/);
+  byId('date-replay-live').click(); await flush();
+  if (priorBoard) history.board = priorBoard; else delete history.board;
+  assert.equal(byId('date-replay-panel').hidden, true);
   const evidence = library.querySelector('[data-evidence-task="main"]');
   assert.deepEqual(evidence.querySelectorAll('td').map(cell => cell.textContent), ['team:lead', 'Proofreading', 'Review checklist v1']);
   assert.equal(evidence.querySelector('[data-order-link]').getAttribute('href'), '#/order/live-run/main');
@@ -25972,6 +26040,7 @@ import * as F from './format.mjs';
   function motionChanged() {
     document.documentElement.dataset.motion = motionQuery && motionQuery.matches ? 'reduce' : 'on';
     if (motionQuery && motionQuery.matches) {
+      stopReportingSequence();
       document.documentElement.dataset.heroIntro = 'quiet';
       document.querySelectorAll('[data-enter]').forEach(clearEnter);
     }
@@ -26544,6 +26613,7 @@ import * as F from './format.mjs';
     attrs(chip, {'data-link': st.link, 'data-not-ended': known ? n.notEnded : '', 'data-held': known ? n.held : '', 'data-judging': known ? n.judging : '', 'data-attention': known ? n.attention : '',
       'data-last-ok': st.lastOkS === null ? '' : wallStamp(st.lastOkS), title: 'Open the status of every order' + (st.lastOkS === null ? '' : '. Last good answer: ' + wallStamp(st.lastOkS))});
     if (changed('chip', [st.link, st.lastOkS, n, known])) { fill(chip, parts); }
+    paintDeskStatus();
   }
   function holdingLine(id) {
     var n = counts(), known = !!S.status.snap, e = $(id);
@@ -27634,6 +27704,44 @@ import * as F from './format.mjs';
     syncSeatFocus();
   }
 
+  // Start on entry or a different seat. A poll may change the contents of the
+  // drawing without invalidating the animation already in progress.
+  var reportingSequence = null;
+  function stopReportingSequence() {
+    if (reportingSequence) {
+      reportingSequence.animations.forEach(function (animation) { animation.cancel(); });
+      reportingSequence.animations.length = 0;
+    }
+  }
+  function traceReportingTree(tree) {
+    if (!S.team || S.view !== 'team' || typeof tree.animate !== 'function') { return; }
+    var selected = S.selectedSeat && seatFor(S.team, S.selectedSeat);
+    var actor = selected ? selected.actor : null;
+    if (reportingSequence && reportingSequence.tree === tree && reportingSequence.page === navigation &&
+        reportingSequence.run === S.team.run && reportingSequence.actor === actor) { return; }
+    stopReportingSequence();
+    var sequence = {tree: tree, run: S.team.run, page: navigation, actor: actor, animations: []};
+    reportingSequence = sequence;
+    if (document.documentElement.dataset.motion !== 'on') { return; }
+    var rank = 0, cards = new Map();
+    tree.querySelectorAll('[data-org-node]').forEach(function (card) { cards.set(card.getAttribute('data-org-node'), card); });
+    function play(element, frames, delay, duration) {
+      sequence.animations.push(element.animate(frames, {duration: duration, delay: delay,
+        easing: 'cubic-bezier(.22,.64,.32,1)', fill: 'backwards'}));
+    }
+    tree.querySelectorAll('[data-org-edge]').forEach(function (edge) {
+      var child = edge.getAttribute('data-to');
+      if (actor && actor !== child && actor !== edge.getAttribute('data-from')) { return; }
+      var wait = Math.min(rank++, 8) * 50;
+      var ink = document.getElementById(edge.getAttribute('data-report-mask')).firstChild;
+      play(ink, [{strokeDashoffset: '1'}, {strokeDashoffset: '0'}], wait, 420);
+      var card = cards.get(child);
+      if (!card) { return; }
+      play(card.querySelector('.org-box'), [{opacity: .12}, {opacity: 1}], wait + 90, 360);
+      play(card.querySelector('.org-ink'), [{opacity: .08, transform: 'translateY(-5px)'},
+        {opacity: 1, transform: 'none'}], wait + 90, 360);
+    });
+  }
   function orgView(doc) {
     var box = drawing('Who reports to whom', 'You direct the lead; the lead directs the seats; the judge checks their work.', {'data-org': ''});
     if (!doc.seats.length) { box.appendChild(empty('No team configured yet.', 'The reporting tree appears when the backend supplies its seats.')); return box; }
@@ -27661,10 +27769,17 @@ import * as F from './format.mjs';
       })); return box;
     }
     var tree = svg('svg', {width: treeWidth, height: height, viewBox: '0 0 ' + treeWidth + ' ' + height, style: 'max-width:' + treeWidth + 'px', 'class': 'org-tree', role: 'group', 'aria-label': 'Reporting tree'}), positions = {}, ends = [];
+    var masks = svg('defs'); tree.appendChild(masks);
     nodes.forEach(function (n) { positions[n.p.actor] = n; });
-    nodes.filter(function (n) { return n.parent; }).forEach(function (n) {
+    nodes.filter(function (n) { return n.parent; }).forEach(function (n, i) {
       var parent = positions[n.parent], pts = [[0, 0], [0, 0]];
-      var edge = svg('path', {'data-org-edge': '', 'data-from': parent.p.actor, 'data-to': n.p.actor, 'data-judge': n.p.actor === doc.judge, 'class': 'diagram-edge', d: routed(pts)});
+      // A white reveal path preserves the dotted judge connection underneath.
+      var maskId = 'report-mask-' + i;
+      var mask = svg('mask', {id: maskId, maskUnits: 'userSpaceOnUse', x: 0, y: 0, width: treeWidth, height: height});
+      mask.appendChild(svg('path', {'data-report-ink': n.p.actor, pathLength: 1, fill: 'none', stroke: 'white',
+        'stroke-width': 24, 'stroke-dasharray': '1 1', 'stroke-dashoffset': 0}));
+      masks.appendChild(mask);
+      var edge = svg('path', {'data-org-edge': '', 'data-report-mask': maskId, mask: 'url(#' + maskId + ')', 'data-from': parent.p.actor, 'data-to': n.p.actor, 'data-judge': n.p.actor === doc.judge, 'class': 'diagram-edge', d: routed(pts)});
       edge.appendChild(svg('title', null, parent.p.name + ' → ' + n.p.name)); tree.appendChild(edge);
       ends.push(...edgeEnds(edge, pts[0], pts[pts.length - 1]));
     });
@@ -27689,13 +27804,30 @@ import * as F from './format.mjs';
         control.appendChild(button); node.appendChild(control);
       }
       var surface = svg('g', {'class': 'org-surface'});
-      Array.from(node.childNodes).forEach(function (child) { surface.appendChild(child); });
-      surface.appendChild(seatGraphic); node.appendChild(surface); tree.appendChild(node);
+      var ink = svg('g', {'class': 'org-ink'});
+      var hit = node.querySelector('foreignObject');
+      surface.appendChild(node.querySelector('.org-box'));
+      Array.from(node.childNodes).forEach(function (child) {
+        if (child !== hit && child.tagName.toLowerCase() !== 'title') { ink.appendChild(child); }
+      });
+      ink.appendChild(seatGraphic); surface.appendChild(ink);
+      if (hit) { surface.appendChild(hit); }
+      node.appendChild(surface); tree.appendChild(node);
     });
     // Rings are last so neither another connector nor a node border covers them.
     ends.forEach(function (end) { tree.appendChild(end); });
     box.appendChild(tree); return box;
   }
+  function selectOrgLevel(box, index, run) {
+    S.levelChoice = {run: run, index: index};
+    box.querySelectorAll('button[data-level]').forEach(function (button, i) {
+      button.setAttribute('aria-pressed', String(i === index));
+    });
+    box.querySelectorAll('[data-level-slab]').forEach(function (layer, i) {
+      layer.setAttribute('data-level-lift', levelLift(i, index));
+    });
+  }
+  function levelLift(i, selected) { return i === selected ? 'selected' : i < selected ? 'above' : 'below'; }
   function levelsView(doc) {
     var groups = [{name: 'You', actors: doc.ceo ? [doc.ceo] : []},
       {name: 'Lead', actors: doc.seats.filter(function (s) { return s.actor === doc.lead; }).map(function (s) { return s.actor; })},
@@ -27704,7 +27836,12 @@ import * as F from './format.mjs';
     var box = drawing('Levels', 'People, seats and programs in the reporting tree. Working counts active launches or Judge checking an order.', {'data-levels': ''});
     var rise = Math.max(14, Math.ceil(Math.max(...groups.map(function (g) { return g.actors.length; })) / 4) * 6), pitch = rise * 2 + 20, height = pitch * groups.length;
     var steps = svg('svg', {width: 176, height: height, viewBox: '0 0 176 ' + height, role: 'img', 'aria-label': 'Organisation levels from top to bottom; accent slabs are working; each disc is one member', 'class': 'level-steps'});
-    var rows = h('div', {'class': 'level-rows'});
+    var selected = S.levelChoice && S.levelChoice.run === doc.run ? S.levelChoice.index : -1;
+    var rows = h('div', {'class': 'level-rows', role: 'group', 'aria-label': 'Highlight an organisation level'});
+    function select(i) {
+      var mounted = $('team-drawings').querySelector('[data-levels]');
+      if (mounted) { selectOrgLevel(mounted, i, doc.run); }
+    }
     groups.forEach(function (g, i) {
       var launches = doc.launches.filter(function (l) { return g.actors.indexOf(l.agent) >= 0; });
       var busy = g.actors.filter(function (actor) {
@@ -27712,6 +27849,8 @@ import * as F from './format.mjs';
       }).length;
       var words = g.name + ': ' + F.count(g.actors.length) + ' total, ' + F.count(busy) + ' working now, ' + countText(launches.length, 'launch');
       var slab = svg('g', {'data-level-slab': g.name, 'data-working': busy, 'class': 'level-slab level-tone-' + i, transform: 'translate(0 ' + i * pitch + ')'});
+      if (selected >= 0) { slab.setAttribute('data-level-lift', levelLift(i, selected)); }
+      on(slab, 'click', function () { select(i); });
       var top = 4, middle = top + rise, bottom = top + rise * 2;
       // A diamond top and two dropped faces share every edge in this projection.
       var step = svg('path', {'data-level-step': g.name, 'data-working': busy, 'data-level-face': 'top', 'class': 'level-step', d: 'M76 ' + top + ' L140 ' + middle + ' L76 ' + bottom + ' L12 ' + middle + ' Z'});
@@ -27727,8 +27866,16 @@ import * as F from './format.mjs';
       });
       slab.appendChild(svg('path', {'data-level-leader': g.name, 'class': 'level-leader', d: 'M140 ' + pitch / 2 + ' H176'}));
       steps.appendChild(slab);
-      rows.appendChild(h('div', {'data-level': g.name, 'data-total': g.actors.length, 'class': 'level-row'}, h('strong', null, g.name),
-        h('span', {'data-level-count': g.actors.length}, F.count(g.actors.length) + ' total'), h('span', {'data-level-working': busy}, F.count(busy) + ' working now'), h('span', {'data-level-launches': launches.length}, countText(launches.length, 'launch'))));
+      var row = h('button', {type: 'button', 'aria-pressed': String(i === selected),
+        'data-level': g.name, 'data-total': g.actors.length, 'class': 'level-row quiet'}, h('strong', null, g.name),
+        h('span', {'data-level-count': g.actors.length}, F.count(g.actors.length) + ' total'), h('span', {'data-level-working': busy}, F.count(busy) + ' working now'), h('span', {'data-level-launches': launches.length}, countText(launches.length, 'launch')));
+      on(row, 'click', function () { select(i); });
+      on(row, 'keydown', function (ev) {
+        var next = {ArrowUp: (i + groups.length - 1) % groups.length, ArrowDown: (i + 1) % groups.length, Home: 0, End: groups.length - 1}[ev.key];
+        if (next === undefined) { return; }
+        ev.preventDefault(); select(next); ev.currentTarget.parentNode.children[next].focus();
+      });
+      rows.appendChild(row);
     });
     box.appendChild(h('div', {'class': 'levels-body', style: '--level-row-height:' + pitch + 'px'}, steps, rows)); return box;
   }
@@ -27765,7 +27912,10 @@ import * as F from './format.mjs';
     });
     ends.forEach(function (end) { wires.appendChild(end); });
     if (!records.length) { cards.appendChild(empty('No sub-orders yet.', 'Participating seats stay above; dispatched work will appear below.')); }
-    stage.appendChild(wires); stage.appendChild(cards); box.appendChild(stage); return box;
+    stage.appendChild(wires); stage.appendChild(cards);
+    var frame = h('div', {'class': 'handoff-scroll', role: 'region', 'aria-label': 'Team handoffs',
+      style: '--handoff-count:' + Math.max(cast.length, records.length)}, stage);
+    box.appendChild(frame); return box;
   }
   function timelineGroups(doc) {
     var groups = {};
@@ -28203,8 +28353,8 @@ import * as F from './format.mjs';
     fill($('compose-library'), [availableLibrary()]);
     var lead = S.team && S.team.seats.filter(function (s) { return s.actor === S.team.lead; })[0];
     fill($('compose-lead'), [leadView(lead), h('p', {'class': 'hint'}, 'Your order goes to the lead, who splits it and hands it out to the team.')]);
-    var composeAction = heroAction(h('button', {type: 'button'}, 'New order'));
-    on(composeAction, 'click', function () { $('compose-title').focus(); });
+    var composeAction = heroAction(h('button', {type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': String(!!deskPanel && deskPanel.kind === 'compose')}, 'New order'));
+    on(composeAction, 'click', function (ev) { if (!showDeskPanel('compose', ev.currentTarget)) { $('compose-title').focus(); } });
     fill($('home-day-link'), [composeAction, dayLink(today, 'Open today')]);
     var newest = orders.slice().sort(function (a, b) { return (b.t || 0) - (a.t || 0); })[0];
     fill($('home-newest-files'), newest ? [attrs(orderLink(newest.run, newest.id, 'Newest order’s files'), {'data-newest-files': '', href: '#/order/' + encodeURIComponent(newest.run) + '/' + encodeURIComponent(newest.id) + '/files'})] : []);
@@ -28233,6 +28383,134 @@ import * as F from './format.mjs';
     if (!d) { return F.count(undefined); }
     var month = F.label(String(d.getUTCMonth()), ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']);
     return (monthOnly ? '' : weekday(d) + ', ' + F.count(d.getUTCDate()) + ' ') + month + ' ' + F.pad2(d.getUTCFullYear());
+  }
+  var deskPanel = null;
+  function finishDeskPanel(restore, after) {
+    var panel = deskPanel;
+    if (!panel) { return; }
+    deskPanel = null;
+    clearTimeout(panel.dismissTimer);
+    if (panel.formHome) { panel.formHome.appendChild($('compose-form')); }
+    panel.opener.setAttribute('aria-expanded', 'false');
+    panel.dialog.close();
+    panel.dialog.remove();
+    if (restore && panel.opener.isConnected) { panel.opener.focus({preventScroll: true}); }
+    if (after) { after(); }
+  }
+  function closeDeskPanel(restore, after) {
+    var panel = deskPanel;
+    if (!panel || panel.dialog.dataset.visible === 'no') { return; }
+    panel.dialog.dataset.visible = 'no';
+    var seconds = getComputedStyle(panel.dialog).transitionDuration;
+    var delay = 1000 * Number.parseFloat(seconds);
+    if (delay > 0) {
+      panel.dismissTimer = setTimeout(function () { if (deskPanel === panel) { finishDeskPanel(restore, after); } }, delay + 25);
+    } else { finishDeskPanel(restore, after); }
+  }
+  function positionDeskStatus() {
+    var panel = deskPanel;
+    if (!panel || panel.kind !== 'status') { return; }
+    var origin = panel.opener.getBoundingClientRect(), box = panel.dialog;
+    var left = Math.max(8, Math.min(origin.left, window.innerWidth - box.offsetWidth - 8));
+    var top = origin.bottom + 6;
+    if (top + box.offsetHeight > window.innerHeight - 8) { top = Math.max(8, origin.top - box.offsetHeight - 6); }
+    box.style.left = left + 'px'; box.style.top = top + 'px';
+  }
+  function paintDeskStatus() {
+    if (!deskPanel || deskPanel.kind !== 'status') { return; }
+    var n = counts(), rows = [h('p', {'class': 'hint'}, linkWords())];
+    if (S.status.snap) {
+      var facts = h('dl', {'class': 'desk-facts'});
+      [['Unfinished', n.notEnded], ['Held', n.held], ['Waiting for the judge', n.judging], ['Need attention', n.attention]].forEach(function (entry) {
+        facts.appendChild(h('div', null, h('dt', null, entry[0]), h('dd', null, entry[1])));
+      });
+      rows.push(facts);
+      Object.keys(S.holders).sort().forEach(function (actor) {
+        var orders = S.holders[actor].orders;
+        if (orders.length) { rows.push(h('p', {'class': 'desk-holder'}, who('holder', actor), ' · ', countText(orders.length, 'held order'))); }
+      });
+    }
+    if (S.team) {
+      var active = S.team.launches.filter(function (launch) { return launch.state === 'running'; });
+      rows.push(h('strong', null, active.length ? countText(active.length, 'running launch') : 'No running launches'));
+      active.forEach(function (launch) {
+        rows.push(h('p', {'class': 'desk-holder'}, actorName(launch.agent), launch.order ? ' · ' : '',
+          launch.order ? orderLink(S.team.run, launch.order, orderTitle(S.team.run, launch.order), 50) : null));
+      });
+    }
+    rows.push(h('a', {href: '#/status'}, 'Full dispatcher status'));
+    fill(deskPanel.body, rows); positionDeskStatus();
+  }
+  function paintDeskCalendar(panel) {
+    var day = panel.date, month = day.slice(0, 7), first = month + '-01';
+    var title = h('strong', {'aria-live': 'polite'}, dateLabel(first, true));
+    function moveMonth(step) {
+      var button = h('button', {type: 'button', 'class': 'quiet', 'aria-label': step < 0 ? 'Previous month' : 'Next month'}, step < 0 ? '‹' : '›');
+      return on(button, 'click', function () { panel.date = shiftMonth(month, step) + '-01'; paintDeskCalendar(panel); });
+    }
+    var week = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
+    var grid = h('div', {'class': 'desk-days', role: 'group', 'aria-label': dateLabel(first, true)});
+    week.forEach(function (word) { grid.appendChild(h('span', {'aria-hidden': 'true'}, word)); });
+    var offset = (parseDate(first).getUTCDay() + 6) % 7;
+    var stop = shiftMonth(month, 1) + '-01';
+    for (var date = first; date < stop; date = shiftDay(date, 1)) {
+      var link = dayLink(date, String(Number(date.slice(-2))));
+      attrs(link, {'data-panel-day': date, 'aria-label': dateLabel(date), tabindex: day === date ? '0' : '-1',
+        'aria-current': date === (S.history && S.history.today) ? 'date' : null});
+      if (date === first) { link.style.gridColumnStart = String(offset + 1); }
+      grid.appendChild(link);
+    }
+    on(grid, 'keydown', function (ev) {
+      var here = ev.target.getAttribute('data-panel-day'), moves = {ArrowUp: -7, ArrowRight: 1, ArrowDown: 7, ArrowLeft: -1};
+      if (!here || !(ev.key in moves)) { return; }
+      ev.preventDefault();
+      panel.date = shiftDay(here, moves[ev.key]); paintDeskCalendar(panel);
+      panel.body.querySelector('[data-panel-day="' + panel.date + '"]').focus();
+    });
+    var foot = h('div', {'class': 'desk-calendar-actions'}, h('a', {href: '#/calendar/' + month}, 'Full calendar'));
+    if (typeof replayAvailable === 'function' && replayAvailable()) {
+      var replay = h('button', {type: 'button', 'class': 'quiet'}, 'Replay recorded days');
+      foot.appendChild(on(replay, 'click', function () { closeDeskPanel(false, openDateReplay); }));
+    }
+    fill(panel.body, [h('div', {'class': 'desk-month'}, moveMonth(-1), title, moveMonth(1)), grid, foot]);
+  }
+  function showDeskPanel(kind, opener) {
+    var dialog = h('dialog', {id: 'desk-panel', 'class': 'desk-panel', 'data-panel': kind, 'aria-labelledby': 'desk-caption'});
+    if (!dialog.showModal) { return false; }
+    if (deskPanel) { finishDeskPanel(false); }
+    var dismiss = h('button', {type: 'button', 'class': 'quiet', 'data-panel-close': '', 'aria-label': 'Close panel'}, 'Close');
+    var title = {compose: 'New order', calendar: 'Choose a date', status: 'Dispatcher status'};
+    dialog.appendChild(h('header', {'class': 'desk-heading'}, h('h2', {id: 'desk-caption'}, title[kind]), dismiss));
+    var body = h('div', {'class': 'desk-body'}), panel = {dialog: dialog, body: body, kind: kind, opener: opener};
+    dialog.appendChild(body); document.body.appendChild(dialog); deskPanel = panel;
+    if (kind === 'calendar') {
+      panel.date = (S.view === 'day' && S.route[1]) || (S.view === 'calendar' && S.route[1] && S.route[1] + '-01') ||
+        (S.history && S.history.today) || new Date().toISOString().slice(0, 10);
+      paintDeskCalendar(panel);
+    } else if (kind === 'compose') {
+      var form = $('compose-form'); panel.formHome = form.parentNode; body.appendChild(form);
+    } else { paintDeskStatus(); }
+    attrs(opener, {'aria-expanded': 'true', 'aria-controls': 'desk-panel'});
+    on(dismiss, 'click', function () { closeDeskPanel(true); });
+    on(dialog, 'cancel', function (ev) { ev.preventDefault(); closeDeskPanel(true); });
+    on(dialog, 'click', function (ev) {
+      var target = ev.target.closest('a[href]');
+      if (target && target.hash === window.location.hash) { closeDeskPanel(true); }
+      if (ev.target !== dialog) { return; }
+      var bounds = dialog.getBoundingClientRect();
+      var outside = ev.clientX < bounds.left || ev.clientY < bounds.top || ev.clientX > bounds.right || ev.clientY > bounds.bottom;
+      if (outside) { closeDeskPanel(true); }
+    });
+    dialog.showModal();
+    positionDeskStatus(); dialog.getBoundingClientRect(); dialog.dataset.visible = 'yes';
+    var initial = kind === 'compose' ? $('compose-title') : kind === 'calendar' ? body.querySelector('[tabindex="0"]') : dismiss;
+    initial.focus({preventScroll: true}); return true;
+  }
+  function linkDeskPanel(link, kind) {
+    attrs(link, {'aria-haspopup': 'dialog', 'aria-expanded': 'false'});
+    on(link, 'click', function (ev) {
+      if (!ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey && !ev.button && showDeskPanel(kind, ev.currentTarget)) { ev.preventDefault(); }
+    });
   }
   function drawCalendar() {
     var month = S.route[1] || S.history.today.slice(0, 7), view = document.querySelector('[data-view="calendar"]');
@@ -29500,7 +29778,9 @@ import * as F from './format.mjs';
         if (!from || !to) { return; }
         var start = from.bottom, end = to.top, bus = start[1] + 16;
         var points = end[1] - start[1] > 120 ? [start, [start[0], bus], [to.left - 8, bus], [to.left - 8, end[1] - 16], [end[0], end[1] - 16], end] : [start, [start[0], bus], [end[0], bus], end];
-        edge.setAttribute('d', routed(points));
+        var path = routed(points);
+        edge.setAttribute('d', path);
+        document.getElementById(edge.getAttribute('data-report-mask')).firstChild.setAttribute('d', path);
         tree.querySelectorAll('[data-edge-end]').forEach(function (ring) {
           if (ring.getAttribute('data-from') === edge.getAttribute('data-from') && ring.getAttribute('data-to') === edge.getAttribute('data-to')) {
             var p = ring.getAttribute('data-edge-end') === 'start' ? start : end;
@@ -29508,6 +29788,7 @@ import * as F from './format.mjs';
           }
         });
       });
+      traceReportingTree(tree);
     });
   }
   function attachFlowEdges() {
@@ -29560,9 +29841,157 @@ import * as F from './format.mjs';
     drawingGeometry();
     enterView();
   }
+  // A recorded day is shared between the Home and Library overviews.
+  var dayReplay = {snapshot: null, day: '', dates: [], timer: null};
+  function replayAvailable() {
+    return !!S.history && (S.view === 'home' || (S.view === 'library' && !S.route[1]));
+  }
+  function pauseDateReplay() {
+    if (dayReplay.timer !== null) { clearInterval(dayReplay.timer); dayReplay.timer = null; }
+  }
+  function recordedDayIndex() {
+    var index = new Map(), offsets = [];
+    function day(date) {
+      if (!parseDate(date) || date > S.history.today) { return null; }
+      if (!index.has(date)) { index.set(date, {runs: [], issued: new Map(), closed: new Map(), records: []}); }
+      return index.get(date);
+    }
+    function orderAt(date, bucket, run, order) {
+      var group = day(date);
+      if (group) { group[bucket].set(JSON.stringify([run, order.id]), {run: run, id: order.id, title: order.title}); }
+    }
+    function stamp(text) {
+      if (typeof text !== 'string') { return ''; }
+      var parts = text.match(/([+-])(\d{2}):(\d{2})$/), time = Date.parse(text);
+      if (parts && Number.isFinite(time)) {
+        offsets.push({time: time, minutes: (parts[1] === '-' ? -1 : 1) * (60 * Number(parts[2]) + Number(parts[3]))});
+      } else if (text.endsWith('Z') && Number.isFinite(time)) { offsets.push({time: time, minutes: 0}); }
+      return text.slice(0, 10);
+    }
+    (S.history.runs || []).forEach(function (run) {
+      var group = day(run.day);
+      if (group) { group.runs.push(run.run); }
+    });
+    Object.keys(S.history.days).forEach(function (date) {
+      dayData(date).orders.forEach(function (order) { orderAt(date, 'issued', order.run, order); });
+    });
+    (S.history.board || []).forEach(function (run) {
+      (run.tasks || []).forEach(function (task) {
+        if (task.issued_at) { orderAt(stamp(task.issued_at), 'issued', run.run, task); }
+        if (task.ended_at) { orderAt(stamp(task.ended_at), 'closed', run.run, task); }
+      });
+    });
+    offsets.sort(function (a, b) { return a.time - b.time; });
+    // Use the offset carried by the nearest dispatcher event. Older backends can
+    // lack zoned events; in that case use the same calendar as the diary view.
+    function recordedDate(time) {
+      var before = 0, after = offsets.length;
+      while (before < after) {
+        var mid = Math.floor((before + after) / 2);
+        if (offsets[mid].time < time) { before = mid + 1; } else { after = mid; }
+      }
+      var left = offsets[before - 1], right = offsets[before];
+      var nearest = !left || (right && right.time - time < time - left.time) ? right : left;
+      return nearest ? new Date(time + nearest.minutes * 60000).toISOString().slice(0, 10) : wallDate(time / 1000);
+    }
+    (S.library && S.library.entries || []).forEach(function (entry) {
+      var time = Date.parse(entry.at);
+      if (!Number.isFinite(time)) { return; }
+      var group = day(recordedDate(time));
+      if (group) { group.records.push(entry); }
+    });
+    return {index: index, localCalendar: !offsets.length && S.tzOffset === null};
+  }
+  function dateReplayList(title, rows, none) {
+    var box = h('section', {'class': 'card'}, h('h3', null, title + ' (' + F.count(rows.length) + ')'));
+    var list = h('ul', {'class': 'replay-rows'});
+    rows.forEach(function (row) { list.appendChild(row); });
+    box.appendChild(rows.length ? list : h('p', {'class': 'hint'}, none));
+    return box;
+  }
+  function drawDateReplay() {
+    var available = replayAvailable(), panel = $('date-replay-panel');
+    $('date-replay-open').hidden = !available || !!dayReplay.snapshot;
+    panel.hidden = !available || !dayReplay.snapshot;
+    if (panel.hidden) {
+      document.documentElement.removeAttribute('data-record-day');
+      pauseDateReplay(); return false;
+    }
+    document.documentElement.setAttribute('data-record-day', '');
+    var history = dayReplay.snapshot, dates = dayReplay.dates;
+    if (!history.index.has(dayReplay.day)) { dayReplay.day = dates[dates.length - 1] || ''; }
+    var date = dayReplay.day, i = dates.indexOf(date), group = history.index.get(date);
+    if (i < 0 || (i === dates.length - 1 && dayReplay.timer !== null)) { pauseDateReplay(); }
+    var select = $('date-replay-select');
+    if (changed('date-replay-options', dates)) {
+      fill(select, dates.map(function (value) { return h('option', {value: value}, value); }));
+    }
+    select.value = date; select.disabled = !dates.length;
+    $('date-replay-prev').disabled = i <= 0;
+    $('date-replay-next').disabled = i < 0 || i >= dates.length - 1;
+    $('date-replay-play').disabled = dates.length < 2;
+    $('date-replay-play').textContent = dayReplay.timer === null ? 'Play days' : 'Pause';
+    $('date-replay-play').setAttribute('aria-pressed', String(dayReplay.timer !== null));
+    var home = S.view === 'home';
+    $('date-replay-scope').textContent = home ? 'Home · recorded activity' : 'Library · recorded versions';
+    $('date-replay-title').textContent = date || 'No recorded days';
+    var other = $('date-replay-other');
+    other.href = home ? '#/library' : '#/';
+    other.textContent = home ? 'Library for this day' : 'Home for this day';
+    var issued = group ? Array.from(group.issued.values()) : [], closed = group ? Array.from(group.closed.values()) : [];
+    var records = group ? group.records.map(function (e) { return [e.id, e.title, e.kind, e.version]; }) : [];
+    if (!changed('date-replay-content', [date, home, issued, closed, records, group && group.runs, history.localCalendar])) { return true; }
+    var content = [];
+    if (group && home) {
+      function orders(rows) { return rows.map(function (o) { return h('li', null, orderLink(o.run, o.id, o.title || o.id)); }); }
+      content.push(dateReplayList('Orders issued', orders(issued), 'No orders were issued on this day.'));
+      content.push(dateReplayList('Orders closed', orders(closed), 'No recorded closures on this day.'));
+      content.push(dateReplayList('Runs started', group.runs.map(function (id) { return h('li', null, h('code', null, id)); }), 'No runs started on this day.'));
+    } else if (group) {
+      content.push(dateReplayList('Versions recorded', records.map(function (r) {
+        return h('li', null, libLink(r[0], r[1] || r[0]), h('small', null, r[2] + (r[3] ? ' · version ' + r[3] : '')));
+      }), 'No library versions recorded on this day.'));
+      if (history.localCalendar && records.length) { content.push(h('p', {'class': 'hint'}, 'Dates use this device’s time zone until a server time reference is available.')); }
+    } else { content.push(h('p', null, 'There are no dated orders, runs or library versions to replay.')); }
+    fill($('date-replay-content'), content);
+    return true;
+  }
+  function openDateReplay() {
+    if (!replayAvailable()) { return; }
+    dayReplay.snapshot = recordedDayIndex();
+    dayReplay.dates = Array.from(dayReplay.snapshot.index.keys()).sort();
+    drawDateReplay();
+    (dayReplay.dates.length ? $('date-replay-select') : $('date-replay-live')).focus();
+  }
+  function moveDateReplay(step) {
+    var days = dayReplay.dates, i = days.indexOf(dayReplay.day) + step;
+    if (days[i]) { dayReplay.day = days[i]; }
+    drawDateReplay();
+  }
+  $('date-replay-open').addEventListener('click', openDateReplay);
+  $('date-replay-select').addEventListener('change', function (ev) {
+    pauseDateReplay(); dayReplay.day = ev.currentTarget.value; drawDateReplay();
+  });
+  $('date-replay-prev').addEventListener('click', function () { pauseDateReplay(); moveDateReplay(-1); });
+  $('date-replay-next').addEventListener('click', function () { pauseDateReplay(); moveDateReplay(1); });
+  $('date-replay-play').addEventListener('click', function () {
+    if (dayReplay.timer !== null) { pauseDateReplay(); }
+    else if (dayReplay.dates.length > 1) {
+      if (dayReplay.day === dayReplay.dates[dayReplay.dates.length - 1]) { dayReplay.day = dayReplay.dates[0]; }
+      dayReplay.timer = setInterval(function () { moveDateReplay(1); }, 1300);
+    }
+    drawDateReplay();
+  });
+  $('date-replay-live').addEventListener('click', function () {
+    pauseDateReplay(); dayReplay.snapshot = null; dayReplay.day = ''; draw();
+    var opener = document.querySelector('[data-open="calendar"]');
+    if (opener) { opener.focus(); }
+  });
+
   function drawView() {
     refreshCards();
     drawTop();
+    if (drawDateReplay()) { return; }
     if (S.view === 'swarms') { refreshSwarmRuns(); }
     if (S.seatDrawer && S.team && S.seatDrawer.run === S.team.run) { drawSeatDrawer(S.team); }
     if (!S.history) { if (S.view === 'board' && !taskBoard) { drawBoard(); } return; }
@@ -29599,6 +30028,7 @@ import * as F from './format.mjs';
     document.querySelectorAll('[data-example-use]').forEach(function (b) { b.disabled = !S.history; });
   }
   function route() {
+    if (deskPanel) { finishDeskPanel(false); }
     if (swarmDesk) {
       clearInterval(swarmTimer);
       swarmDesk.dispose();
@@ -29621,7 +30051,7 @@ import * as F from './format.mjs';
     document.documentElement.dataset.route = view;
     // Direct links introduce the hero. Moving to the collection inside the workspace is immediate.
     document.documentElement.dataset.heroIntro = document.documentElement.dataset.motion === 'on' && (view === 'home' || (view === 'library' && !parts[1] && navigation === 1)) ? 'play' : 'quiet';
-    var compact = ['home', 'board', 'files', 'ledger', 'swarms', 'library'].includes(view);
+    var compact = ['home', 'team', 'board', 'files', 'ledger', 'swarms', 'library'].includes(view);
     document.documentElement.dataset.layout = compact ? 'responsive' : 'desktop';
     var viewport = $('page-viewport'), width = compact ? 'width=device-width,initial-scale=1' : 'width=1280';
     if (viewport.getAttribute('content') !== width) { viewport.setAttribute('content', width); }
@@ -29640,6 +30070,7 @@ import * as F from './format.mjs';
       delete S.drawn['library-list']; delete S.drawn['library-detail']; delete S.drawn['library-missing']; delete S.drawn['library-keep'];
       fill($('library-content'), [skeleton()]);
     }
+    if (view === 'home' && S.focusCompose) { dayReplay.snapshot = null; pauseDateReplay(); }
     if (view === 'swarms') { openSwarms(parts[1]); }
     document.title = (view.charAt(0).toUpperCase() + view.slice(1)) + ' / OpenCode Cockpit';
     draw();
@@ -29750,14 +30181,16 @@ import * as F from './format.mjs';
     if (!fields.goal) { fail('Add a goal so the lead knows what to deliver.'); $('compose-goal').focus(); return; }
     if (!S.team || !S.history || S.offline) { fail('The backend is not reachable. Your draft is kept here.'); return; }
     var data = orderEnvelope(fields), run = S.history.live_run;
+    var composer = deskPanel && deskPanel.kind === 'compose' ? deskPanel : null;
     S.composing = true; error.hidden = true; $('compose-submit').disabled = true; $('compose-submit').textContent = 'Sending to lead'; $('compose-form').setAttribute('aria-busy', 'true');
     post('/message', data).then(function (r) {
       if (!r.ok || !r.data.ok) { throw new Error(r.data.detail ? JSON.stringify(r.data.detail) : 'The order was refused. Check the goal and try again.'); }
       if ($('compose-title').value.trim() === fields.title) { $('compose-title').value = ''; }
       if ($('compose-goal').value.trim() === fields.goal) { $('compose-goal').value = ''; }
       S.issued = {run: run, id: data.body.id};
-      orderReceipt(run, data.body.id, fields.title, $('compose-title'));
-      if (S.view === 'home') { $('compose-title').focus(); }
+      orderReceipt(run, data.body.id, fields.title, composer ? composer.opener : $('compose-title'));
+      if (composer && deskPanel === composer && !$('compose-title').value && !$('compose-goal').value) { closeDeskPanel(true); }
+      else if (!composer && S.view === 'home') { $('compose-title').focus(); }
       return tick();
     }).catch(function (e) { fail(e.message || 'No answer. Check today before sending again.'); }).finally(function () {
       S.composing = false; $('compose-submit').disabled = false; $('compose-submit').textContent = 'Send to lead'; $('compose-form').setAttribute('aria-busy', 'false');
@@ -29791,6 +30224,9 @@ import * as F from './format.mjs';
   var routeKeys = {h: 'home', c: 'calendar', b: 'board', t: 'team', s: 'swarms', f: 'files', l: 'ledger'};
   ['home', 'calendar', 'board', 'team', 'swarms', 'files', 'ledger', 'library'].forEach(function (name) { $('nav-links').appendChild(h('a', {'data-nav-to': name, title: 'Open ' + name + (Object.keys(routeKeys).find(function (key) { return routeKeys[key] === name; }) ? ' (g then ' + Object.keys(routeKeys).find(function (key) { return routeKeys[key] === name; }) + ')' : ''), href: name === 'home' ? '#/' : '#/' + name}, glyph(name), name.charAt(0).toUpperCase() + name.slice(1))); });
   ['calendar', 'help'].forEach(function (name) { $('top-links').appendChild(h('a', {'data-open': name, href: '#/' + name, 'class': 'icon-link', 'aria-label': 'Open ' + name, title: name === 'help' ? 'Help (?)' : 'Calendar (g then c)'}, glyph(name))); });
+  linkDeskPanel($('status-chip'), 'status');
+  linkDeskPanel(document.querySelector('[data-open="calendar"]'), 'calendar');
+  window.addEventListener('resize', positionDeskStatus);
   ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].forEach(function (name) { $('weekdays').appendChild(h('div', {'data-weekday': name}, name)); });
   [['running', 'Waiting', 'PENDING'], ['running', 'Being worked on', 'LEASED'], ['running', 'Sub-orders open', 'LEASED'], ['running', 'With the judge', 'JUDGING'], ['done', 'Succeeded', 'SUCCEEDED'], ['failed', 'Failed', 'FAILED'], ['failed', 'Attempts used up', 'DEAD'],
     ['failed', 'Cancelled', 'CANCELLED'], ['failed', 'Past run, stopped', 'attention'], ['planned', 'Planned', 'planned'], ['planned', 'Planned, due', 'due']].forEach(function (item) { $('calendar-legend').appendChild(h('span', null, h('i', {'class': 'dot', 'data-status': item[0]}), badge(item[2], item[1]))); });
@@ -29830,6 +30266,7 @@ import * as F from './format.mjs';
     return false;
   }
   document.addEventListener('keydown', function (e) {
+    if (deskPanel) { return; }
     if (e.key === 'Escape') {
       if (!$('preview').hidden) { e.preventDefault(); closePreview(); return; }
       if (publicBoard && publicBoard.keydown(e)) { return; }
@@ -29849,7 +30286,7 @@ import * as F from './format.mjs';
     if (following && routeKeys[key]) {
       e.preventDefault(); window.location.hash = routeKeys[key] === 'home' ? '#/' : '#/' + routeKeys[key];
     } else if (key === 'g') { goKeyAt = Date.now(); }
-    else if (key === '/' && S.view === 'library' && !S.route[1]) {
+    else if (key === '/' && S.view === 'library' && !S.route[1] && !dayReplay.snapshot) {
       var librarySearch = document.querySelector('[data-lib-search]');
       if (librarySearch) { e.preventDefault(); librarySearch.focus(); }
     }
@@ -29857,6 +30294,7 @@ import * as F from './format.mjs';
     else if (key === '?') { e.preventDefault(); window.location.hash = '#/help'; }
     else if (key === 'n') {
       e.preventDefault();
+      if (dayReplay.snapshot) { pauseDateReplay(); dayReplay.snapshot = null; draw(); }
       if (S.view === 'home') { $('compose-title').focus(); }
       else { S.focusCompose = true; window.location.hash = '#/'; }
     }
@@ -29870,7 +30308,11 @@ import * as F from './format.mjs';
       }
     }
   });
-  on(document, 'visibilitychange', function () { setHeroPlayback(); if (!document.hidden) { pollStatus(); } });
+  on(document, 'visibilitychange', function () {
+    setHeroPlayback();
+    if (document.hidden && dayReplay.timer !== null) { pauseDateReplay(); drawDateReplay(); }
+    if (!document.hidden) { pollStatus(); }
+  });
   route(); loop(); statusLoop();
   loadLocalUI('hero', true, function (hero) { window.CockpitHero = hero.mount(); });
 }());
@@ -30610,6 +31052,15 @@ cat > 'web/index.html' <<'OC_EOF_94'
 </header>
 <p id="notice" class="notice" hidden></p>
 <main>
+<section id="date-replay-panel" aria-labelledby="date-replay-title" hidden>
+  <p class="eyebrow" id="date-replay-scope"></p><h2 id="date-replay-title" aria-live="polite"></h2>
+  <div aria-label="Recorded days" class="replay-calendar-tools" role="group">
+    <label>Recorded day <select id="date-replay-select"></select></label>
+    <button id="date-replay-prev" type="button">Previous</button><button id="date-replay-play" type="button">Play days</button><button id="date-replay-next" type="button">Next</button>
+    <button id="date-replay-live" type="button">Return to live</button>
+  </div>
+  <p><a id="date-replay-other" href="#/library">Library for this day</a></p><div id="date-replay-content"></div>
+</section>
 <section data-view="home" aria-labelledby="hero-date">
   <section data-hero class="hero"><span class="hero-current" aria-hidden="true"></span><div id="hero-art"></div><div class="page-head"><div><p id="home-h" class="eyebrow">Make room for good work.</p><h2 id="hero-date">Today</h2><p id="hero-sentence">Give your team a clear goal, then follow the work here.</p></div><div id="home-day-link" class="hero-actions"></div></div><div id="hero-stats" class="stats"></div></section>
   <section id="home-proposals" data-home-proposals hidden aria-label="Proposals waiting for you"></section>
@@ -30688,7 +31139,7 @@ cat > 'web/index.html' <<'OC_EOF_94'
   <h3 class="examples-heading section-heading">Start with an example</h3><div id="examples" class="team"></div>
 </section>
 </main>
-<footer class="foot">Local workspace. Agent command: <code>opencode run --format json -m &lt;model&gt;</code>. <a href="/web/quality.html">Quality radar</a></footer>
+<footer class="foot"><button type="button" class="quiet" id="date-replay-open" hidden>Replay recorded days</button> Local workspace. Agent command: <code>opencode run --format json -m &lt;model&gt;</code>. <a href="/web/quality.html">Quality radar</a></footer>
 </div>
 <aside id="preview" class="preview" aria-modal="true" role="dialog" aria-label="File preview" tabindex="-1" hidden><div class="preview-head"><code id="preview-path"></code><button id="preview-close" type="button" class="quiet">Close</button></div><pre id="preview-text"></pre></aside>
 <aside id="seat-drawer" class="preview seat-drawer" aria-modal="true" role="dialog" aria-labelledby="seat-drawer-heading" hidden><div class="preview-head"><h3 id="seat-drawer-heading">Seat launches</h3><button id="seat-drawer-close" type="button" class="quiet">Close</button></div><div id="seat-drawer-content"></div></aside>
@@ -31196,6 +31647,82 @@ cat > 'web/look-home.css' <<'OC_EOF_96'
     grid-column:1 / -1;
     grid-row:auto;
   }
+}
+
+/* Workspace controls keep the current page and its scroll position in place. */
+.desk-panel{
+  --desk-offset:translateY(8px) scale(.97);
+  --desk-enter:260ms;
+  --desk-leave:150ms;
+  position:fixed;
+  margin:auto;
+  padding:20px;
+  inline-size:min(30rem,calc(100% - 24px));
+  max-inline-size:none;
+  max-block-size:calc(100dvh - 32px);
+  box-sizing:border-box;
+  overflow:auto;
+  overscroll-behavior:contain;
+  color:var(--ink);
+  background:var(--paper);
+  border:1px solid var(--line-2);
+  border-radius:16px;
+  box-shadow:0 16px 56px rgb(18 29 49 / .21);
+  opacity:0;
+  transform:var(--desk-offset);
+  transition-property:opacity,transform;
+  transition-duration:var(--desk-leave);
+  transition-timing-function:ease-in;
+}
+.desk-panel[data-visible=yes]{
+  transform:none; opacity:1;
+  transition-duration:var(--desk-enter);
+  transition-timing-function:cubic-bezier(.18,.69,.28,1);
+}
+.desk-panel::backdrop{background:rgb(19 28 45 / .31); opacity:0; transition:opacity 150ms ease-out;}
+.desk-panel[data-visible=yes]::backdrop{opacity:1; transition-duration:180ms;}
+.desk-panel[data-panel=status]{
+  --desk-offset:translateY(-4px) scale(.98);
+  --desk-enter:200ms;
+  inline-size:min(24rem,calc(100% - 16px));
+  inset:auto; margin:0; transform-origin:top left;
+}
+.desk-panel[data-panel=status]::backdrop{background:none;}
+.desk-heading,.desk-month,.desk-calendar-actions{gap:12px; display:flex; justify-content:space-between; align-items:center;}
+.desk-heading{margin-bottom:16px;}
+.desk-heading h2{margin:0; font-size:20px; line-height:1.25;}
+.desk-days{display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); margin-block:12px;}
+.desk-days > span,.desk-days > a{text-align:center; padding:8px 0;}
+.desk-days > span{color:var(--ink-3); font-size:12px;}
+.desk-days > a{border-radius:8px; color:var(--ink); text-decoration:none;}
+.desk-days > a:is(:hover,:focus-visible){background:var(--wash); outline:2px solid var(--accent); outline-offset:-2px;}
+.desk-days > a[aria-current=date]{font-weight:700; color:var(--accent);}
+.desk-month button,.desk-heading button{min-height:36px; min-width:40px;}
+.desk-month button{font-size:20px;}
+.desk-body form{display:grid; gap:12px;}
+.desk-body form label{display:grid; gap:4px;}
+.desk-body textarea{resize:vertical;}
+.desk-body .actions{flex-wrap:wrap;}
+.desk-facts{margin:12px 0; display:grid; gap:6px;}
+.desk-facts div{display:flex; gap:18px; justify-content:space-between;}
+.desk-facts dd{font-variant-numeric:tabular-nums; margin:0; font-weight:600;}
+.desk-holder{margin-block:6px;}
+:root:has(.desk-panel[open]){overflow:hidden;}
+@media(max-width:680px){
+  .desk-panel:not([data-panel=status]){
+    --desk-offset:translateY(100%);
+    --desk-enter:320ms;
+    --desk-leave:200ms;
+    margin:auto 0 0;
+    max-block-size:calc(100dvh - 12px);
+    inline-size:100%;
+    border-radius:18px 18px 0 0;
+    padding:18px 16px; padding-bottom:max(env(safe-area-inset-bottom),18px);
+  }
+  .desk-days > a{padding-block:10px;}
+}
+@media(prefers-reduced-motion:reduce){
+  .desk-panel,.desk-panel[data-visible=yes],.desk-panel::backdrop,.desk-panel[data-visible=yes]::backdrop{transition-duration:0s;}
 }
 OC_EOF_96
 cat > 'web/look-order.css' <<'OC_EOF_97'
@@ -31820,6 +32347,18 @@ cat > 'web/look-records.css' <<'OC_EOF_98'
   html[data-route=library] .top .meters{ gap:4px; }
   html[data-route=library] .top{ padding-block-end:6px; margin-block-end:10px; }
 }
+
+/* Date replay shows only evidence recorded on the chosen calendar day. */
+html[data-record-day] main > [data-view]{display:none !important;}
+#date-replay-panel{max-inline-size:68rem; margin-inline:auto;}
+#date-replay-panel h2{margin-block:4px 16px; font-variant-numeric:tabular-nums;}
+.replay-calendar-tools{display:flex; flex-flow:row wrap; align-items:end; gap:8px;}
+.replay-calendar-tools label{display:grid; gap:4px;}
+.replay-calendar-tools :is(button,select){min-height:40px;}
+#date-replay-content{display:grid; gap:12px; margin-block:14px;}
+.replay-rows{padding-inline-start:1.4em; overflow-wrap:anywhere;}
+.replay-rows li + li{margin-block-start:6px;}
+.replay-rows small{margin-inline-start:8px; color:var(--ink-2);}
 OC_EOF_98
 cat > 'web/look-team.css' <<'OC_EOF_99'
 /* Team only. ui-foundation: four inks, quiet surfaces, one interval per layer.
@@ -32028,6 +32567,73 @@ cat > 'web/look-team.css' <<'OC_EOF_99'
 :root body [data-view=team] [data-gantt-row][data-selected]{background:rgb(0 112 214 / .06);}
 :root body [data-view=team] .gantt-track{background:#0000;}
 :root body [data-view=team] [data-replay-range]{accent-color:#0070d6;}
+
+/* Keep the stack projection separate from each layer's selected position. */
+:root body [data-view=team] .level-steps{overflow:visible;}
+:root body [data-view=team] .level-slab{cursor:pointer;}
+:root body [data-view=team] [data-level-lift=selected]{translate:0 -6px;}
+:root body [data-view=team] [data-level-lift=above]{translate:0 -11px;}
+:root body [data-view=team] [data-level-lift=below]{translate:0 5px;}
+html[data-motion=on] [data-view=team] .level-slab{transition:translate 560ms cubic-bezier(.2,.72,.26,1);}
+:root body [data-view=team] [data-levels] button.level-row{
+  display:grid;
+  width:100%;
+  text-align:start;
+  font:inherit;
+  font-size:var(--text-xs);
+  padding-block:0;
+  padding-inline-end:4px;
+  border:0;
+  background:none;
+  box-shadow:none;
+  color:var(--team-body);
+}
+:root body [data-view=team] [data-levels] .level-row[aria-pressed=true]{
+  background:var(--wash);
+  box-shadow:inset 2px 0 var(--team-secondary);
+}
+:root body [data-view=team] [data-levels] .level-row:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:-2px;
+}
+@media (forced-colors:active){
+  .org-tree mask path{forced-color-adjust:none;}
+  [data-levels] button[aria-pressed=true]{outline:2px solid Highlight;}
+}
+
+
+@media (max-width:760px) {
+  html[data-route=team] body [data-view=team] {
+    --team-column: minmax(0, 1fr);
+    --team-pair: repeat(2, var(--team-column));
+  }
+  html[data-route=team] body :is(#team-stats,.canvas-stats) {
+    display:grid;
+    grid-template-columns:var(--team-pair);
+    gap:8px;
+  }
+  html[data-route=team] body [data-view=team] :is(.team,.team-overview,.team-comparison,.canvas-card,.canvas-head,.canvas-workarea,.full-seat-panel) {
+    grid-template-columns:var(--team-column);
+    grid-template-rows:auto;
+  }
+  html[data-route=team] body :is(.canvas-stats,.canvas-tablist) { justify-content:start; }
+  html[data-route=team] body [data-canvas-rail] { height:12rem; }
+  html[data-route=team] body [data-canvas-stage] { height:clamp(18rem,48svh,28rem); }
+  html[data-route=team] body .replay-bar {
+    grid-template-columns:auto var(--team-column) auto;
+  }
+  html[data-route=team] body .replay-bar input { grid-column:1 / -1; grid-row:1; min-width:0; }
+  html[data-route=team] body [data-canvas-panel] { min-inline-size:0; }
+  html[data-route=team] body .canvas-tablist { flex-wrap:wrap; }
+  html[data-route=team] body :has(> .timeline-legend) { flex-wrap:wrap; }
+  html[data-route=team] body .timeline-legend {
+    flex:1 1 100%;
+    flex-wrap:wrap;
+    margin-inline:0;
+  }
+  html[data-route=team] .handoff-scroll { overflow-x:auto; }
+  html[data-route=team] .handoff-stage { min-inline-size:calc(var(--handoff-count) * 9rem); }
+}
 OC_EOF_99
 cat > 'web/quality-data.json' <<'OC_EOF_100'
 {
@@ -32036,7 +32642,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
  "criteria_sha256": "44159b4742b475ce35c3c9ed8dc29df84f33592cf52da9556bde4a5137704c6c",
  "instruments_sha256": "849c6dcfac1405f55e87137179065f43c804b5cd63d86a8cdf5118cbcb0de311",
  "fixture": "release-review-v1",
- "measured_at": "2026-11-24T01:02:13+00:00",
+ "measured_at": "2026-11-24T13:37:12+00:00",
  "versions": [
   {
    "id": "paid",
@@ -32050,9 +32656,9 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "id": "gpt",
    "name": "GPT-6.2",
    "color": "#005ea8",
-   "revision": "Runtime 5cb2504c4dfd",
-   "runtime_sha256": "5cb2504c4dfd5788fb928101caffb7bd8bab78d8c64317fe57a707ed87045898",
-   "captured": "2026-11-24T01:02:13+00:00"
+   "revision": "Runtime aad33babe457",
+   "runtime_sha256": "aad33babe4579d85fee15ba897ff69b2626b0b74e67f3c048499ee66f3852fd9",
+   "captured": "2026-11-24T13:37:12+00:00"
   },
   {
    "id": "mine",
@@ -32245,8 +32851,8 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
     "gpt": {
      "total": 8,
      "measured": 8,
-     "passed": 5,
-     "score": 0.8125
+     "passed": 6,
+     "score": 0.875
     },
     "mine": {
      "total": 8,
@@ -32270,7 +32876,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "total": 8,
      "measured": 8,
      "passed": 6,
-     "score": 0.9348384032328164
+     "score": 0.9328569077801382
     },
     "mine": {
      "total": 8,
@@ -32317,8 +32923,8 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
     "gpt": {
      "total": 9,
      "measured": 8,
-     "passed": 5,
-     "score": 0.8020833333333334
+     "passed": 6,
+     "score": 0.8333333333333334
     },
     "mine": {
      "total": 9,
@@ -33575,7 +34181,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "passed": true,
      "score": 1,
      "evidence": {
-      "revision": "b48aa66a4a96cfce8520a1c0a0abf5bd7e89b2f7",
+      "revision": "ad059b4b6fdfadc529b7667f71ac57107aae8d31",
       "scanner": "privacy_scan",
       "scope": "reachable history"
      }
@@ -35418,16 +36024,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 1,
-     "passed": false,
-     "score": 0.5,
+     "value": 2,
+     "passed": true,
+     "score": 1,
      "evidence": {
       "fits": true,
-      "natural": false,
-      "viewport": 1280,
-      "width": 1280,
-      "device": false,
-      "scale": 0.3046875
+      "natural": true,
+      "viewport": 390,
+      "width": 390,
+      "device": true,
+      "scale": 1
      }
     },
     "mine": {
@@ -35723,16 +36329,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 52.60000038146973,
+     "value": 48.5,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       52.60000038146973,
-       48.90000009536743,
-       57.59999990463257,
-       46.89999961853027,
-       54.30000019073486
+       48.19999980926514,
+       63.69999980926514,
+       75.0,
+       46.80000019073486,
+       48.5
       ],
       "aggregate": "median",
       "cold": true
@@ -35783,16 +36389,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 32.0,
+     "value": 28.0,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       32.0,
-       32.0,
-       36.0,
        28.0,
-       36.0
+       40.0,
+       24.0,
+       28.0,
+       28.0
       ],
       "aggregate": "median",
       "cold": true
@@ -35843,16 +36449,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 841.2099609375,
+     "value": 869.775390625,
      "passed": false,
-     "score": 0.6734319414411273,
+     "score": 0.6574914114815849,
      "evidence": {
       "samples": [
-       841.2099609375,
-       841.2099609375,
-       841.2099609375,
-       841.2099609375,
-       841.2099609375
+       869.775390625,
+       869.775390625,
+       869.775390625,
+       869.775390625,
+       869.775390625
       ],
       "aggregate": "median",
       "cold": true
@@ -35956,16 +36562,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "reason": "No rendered link to a supported order detail API"
     },
     "gpt": {
-     "value": 61.5,
+     "value": 65.59999990463257,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
+       70.90000009536743,
+       64.40000009536743,
+       78.5,
        65.59999990463257,
-       61.10000038146973,
-       77.39999961853027,
-       60.80000019073486,
-       61.5
+       62.09999990463257
       ],
       "aggregate": "median"
      }
@@ -36007,16 +36613,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "reason": "No rendered link to a supported order detail API"
     },
     "gpt": {
-     "value": 77.39999961853027,
+     "value": 78.5,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
+       70.90000009536743,
+       64.40000009536743,
+       78.5,
        65.59999990463257,
-       61.10000038146973,
-       77.39999961853027,
-       60.80000019073486,
-       61.5
+       62.09999990463257
       ],
       "aggregate": "maximum"
      }
@@ -36060,12 +36666,12 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 31.36696586943153,
+     "value": 31.356337908857554,
      "passed": false,
-     "score": 0.8052752844214038,
+     "score": 0.8053638507595203,
      "evidence": {
-      "seconds": 12.002700000286103,
-      "bytes": 385524,
+      "seconds": 12.001099999904632,
+      "bytes": 385342,
       "requests": 13,
       "repeat": true
      }
@@ -36105,12 +36711,12 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 1.0830896381389292,
+     "value": 1.0832340368885607,
      "passed": true,
      "score": 1,
      "evidence": {
-      "seconds": 12.002700000286103,
-      "bytes": 385524,
+      "seconds": 12.001099999904632,
+      "bytes": 385342,
       "requests": 13,
       "repeat": true
      }
@@ -38053,9 +38659,9 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 0.75,
-     "passed": false,
-     "score": 0.75,
+     "value": 1.0,
+     "passed": true,
+     "score": 1,
      "evidence": {
       "items": [
        {
@@ -38073,13 +38679,13 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
        {
         "id": "phone.02",
         "name": "Team",
-        "got": false,
+        "got": true,
         "source": "mobile.team",
         "phone": {
          "deviceWidth": 390,
-         "pageWidth": 1280,
-         "viewport": 1280,
-         "scale": 0.3046875
+         "pageWidth": 390,
+         "viewport": 390,
+         "scale": 1
         }
        },
        {
@@ -38137,7 +38743,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
         "source": "No comparable probe"
        }
       ],
-      "yes": 3,
+      "yes": 4,
       "total": 9,
       "measured": 4
      }
@@ -38695,13 +39301,13 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
  "evolution": {
   "slot": "gpt",
   "improved": [
-   "motion.background.normal",
-   "motion.title.normal"
+   "mobile.team",
+   "records.phone"
   ],
   "regressed": [],
   "passed": true,
-  "previous_revision": "Runtime 2ecfe60effc0",
-  "previous_report_sha256": "cea9d5cb6830de16b8a71eed7b4338acd3d9b6dc73e097fad12015287f05e575",
+  "previous_revision": "Runtime 5cb2504c4dfd",
+  "previous_report_sha256": "db814c08482095f57c2bb41d6f381b13841a3e3b3c4b4eca26c473fdcf48b7f6",
   "previous_values": {
    "correct.tests": 1.0,
    "correct.invariants": 13,
@@ -38767,14 +39373,14 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "mobile.files": 2,
    "mobile.ledger": 2,
    "mobile.swarms": 2,
-   "speed.home": 50.19999980926514,
-   "speed.paint": 20.0,
-   "speed.bytes": 833.1806640625,
+   "speed.home": 52.60000038146973,
+   "speed.paint": 32.0,
+   "speed.bytes": 841.2099609375,
    "speed.requests": 17.0,
-   "speed.order": 67.59999990463257,
-   "speed.tail": 84.69999980926514,
-   "speed.pollbytes": 31.362237529343606,
-   "speed.pollrate": 1.0829994085329162,
+   "speed.order": 61.5,
+   "speed.tail": 77.39999961853027,
+   "speed.pollbytes": 31.36696586943153,
+   "speed.pollrate": 1.0830896381389292,
    "robust.offline": 1,
    "robust.stale": 1,
    "robust.overlap": 1,
@@ -38801,7 +39407,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "verify.hash": 1,
    "verify.raw": 1
   },
-  "previous_runtime_sha256": "2ecfe60effc082a173d40390fbccbf707de634ae07cc27c2bdf851b5ae8e8bb1",
+  "previous_runtime_sha256": "5cb2504c4dfd5788fb928101caffb7bd8bab78d8c64317fe57a707ed87045898",
   "motion": {
    "instrument": {
     "capture": "42ecf3865b6ae96368e3a7761c34104daa7d9145ff818be5459532d2c8c99f8f",
@@ -39556,1085 +40162,283 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     }
    },
-   "parent": "cea9d5cb6830de16b8a71eed7b4338acd3d9b6dc73e097fad12015287f05e575",
+   "parent": "db814c08482095f57c2bb41d6f381b13841a3e3b3c4b4eca26c473fdcf48b7f6",
    "before": {
-    "normal": {
-     "background": {
-      "pixels": 51043,
-      "steps": [
-       [
-        142,
-        0
-       ],
-       [
-        267,
-        0
-       ],
-       [
-        392,
-        0
-       ],
-       [
-        518,
-        0
-       ],
-       [
-        642,
-        0
-       ],
-       [
-        767,
-        0
-       ],
-       [
-        892,
-        0
-       ],
-       [
-        1017,
-        0
-       ],
-       [
-        1142,
-        0
-       ],
-       [
-        1267,
-        0
-       ],
-       [
-        1392,
-        0
-       ],
-       [
-        1517,
-        0
-       ],
-       [
-        1642,
-        0
-       ],
-       [
-        1767,
-        0
-       ],
-       [
-        1892,
-        0
-       ],
-       [
-        2017,
-        0
-       ],
-       [
-        2142,
-        0
-       ],
-       [
-        2267,
-        0
-       ],
-       [
-        2392,
-        0
-       ],
-       [
-        2518,
-        0
-       ],
-       [
-        2642,
-        0
-       ],
-       [
-        2767,
-        0
-       ],
-       [
-        2892,
-        0
-       ],
-       [
-        3017,
-        0
-       ],
-       [
-        3142,
-        0
-       ],
-       [
-        3267,
-        0
-       ],
-       [
-        3392,
-        0
-       ],
-       [
-        3518,
-        0
-       ],
-       [
-        3643,
-        0
-       ],
-       [
-        3767,
-        0
-       ],
-       [
-        3892,
-        0
-       ],
-       [
-        4017,
-        0
-       ],
-       [
-        4142,
-        0
-       ],
-       [
-        4267,
-        0
-       ],
-       [
-        4392,
-        0
-       ],
-       [
-        4517,
-        0
-       ],
-       [
-        4642,
-        0
-       ],
-       [
-        4767,
-        0
-       ],
-       [
-        4891,
-        0
-       ],
-       [
-        5017,
-        0
-       ],
-       [
-        5142,
-        0
-       ],
-       [
-        5267,
-        0
-       ],
-       [
-        5392,
-        0
-       ],
-       [
-        5518,
-        0
-       ],
-       [
-        5642,
-        0
-       ],
-       [
-        5767,
-        0
-       ],
-       [
-        5892,
-        0
-       ],
-       [
-        6017,
-        0
-       ],
-       [
-        6142,
-        0
-       ],
-       [
-        6267,
-        0
-       ],
-       [
-        6391,
-        0
-       ],
-       [
-        6517,
-        0
-       ],
-       [
-        6642,
-        0
-       ],
-       [
-        6767,
-        0
-       ],
-       [
-        6892,
-        0
-       ],
-       [
-        7017,
-        0
-       ],
-       [
-        7142,
-        0
-       ],
-       [
-        7267,
-        0
-       ],
-       [
-        7392,
-        0
-       ],
-       [
-        7517,
-        0
-       ],
-       [
-        7642,
-        0
-       ],
-       [
-        7767,
-        0
-       ],
-       [
-        7892,
-        0
-       ],
-       [
-        8017,
-        0
-       ],
-       [
-        8142,
-        0
-       ],
-       [
-        8267,
-        0
-       ],
-       [
-        8392,
-        0
-       ],
-       [
-        8517,
-        0
-       ]
-      ]
-     },
-     "title": {
-      "pixels": 628,
-      "steps": [
-       [
-        142,
-        0
-       ],
-       [
-        267,
-        0
-       ],
-       [
-        392,
-        0
-       ],
-       [
-        518,
-        0
-       ],
-       [
-        642,
-        0
-       ],
-       [
-        767,
-        0
-       ],
-       [
-        892,
-        0
-       ],
-       [
-        1017,
-        0
-       ],
-       [
-        1142,
-        0
-       ],
-       [
-        1267,
-        0
-       ],
-       [
-        1392,
-        0
-       ],
-       [
-        1517,
-        0
-       ],
-       [
-        1642,
-        0
-       ],
-       [
-        1767,
-        0
-       ],
-       [
-        1892,
-        0
-       ],
-       [
-        2017,
-        0
-       ],
-       [
-        2142,
-        0
-       ],
-       [
-        2267,
-        0
-       ],
-       [
-        2392,
-        0
-       ],
-       [
-        2518,
-        0
-       ],
-       [
-        2642,
-        0
-       ],
-       [
-        2767,
-        0
-       ],
-       [
-        2892,
-        0
-       ],
-       [
-        3017,
-        0
-       ],
-       [
-        3142,
-        0
-       ],
-       [
-        3267,
-        0
-       ],
-       [
-        3392,
-        0
-       ],
-       [
-        3518,
-        0
-       ],
-       [
-        3643,
-        0
-       ],
-       [
-        3767,
-        0
-       ],
-       [
-        3892,
-        0
-       ],
-       [
-        4017,
-        0
-       ],
-       [
-        4142,
-        0
-       ],
-       [
-        4267,
-        0
-       ],
-       [
-        4392,
-        0
-       ],
-       [
-        4517,
-        0
-       ],
-       [
-        4642,
-        0
-       ],
-       [
-        4767,
-        0
-       ],
-       [
-        4891,
-        0
-       ],
-       [
-        5017,
-        0
-       ],
-       [
-        5142,
-        0
-       ],
-       [
-        5267,
-        0
-       ],
-       [
-        5392,
-        0
-       ],
-       [
-        5518,
-        0
-       ],
-       [
-        5642,
-        0
-       ],
-       [
-        5767,
-        0
-       ],
-       [
-        5892,
-        0
-       ],
-       [
-        6017,
-        0
-       ],
-       [
-        6142,
-        0
-       ],
-       [
-        6267,
-        0
-       ],
-       [
-        6391,
-        0
-       ],
-       [
-        6517,
-        0
-       ],
-       [
-        6642,
-        0
-       ],
-       [
-        6767,
-        0
-       ],
-       [
-        6892,
-        0
-       ],
-       [
-        7017,
-        0
-       ],
-       [
-        7142,
-        0
-       ],
-       [
-        7267,
-        0
-       ],
-       [
-        7392,
-        0
-       ],
-       [
-        7517,
-        0
-       ],
-       [
-        7642,
-        0
-       ],
-       [
-        7767,
-        0
-       ],
-       [
-        7892,
-        0
-       ],
-       [
-        8017,
-        0
-       ],
-       [
-        8142,
-        0
-       ],
-       [
-        8267,
-        0
-       ],
-       [
-        8392,
-        0
-       ],
-       [
-        8517,
-        0
-       ]
-      ]
-     }
-    },
-    "reduce": {
-     "background": {
-      "pixels": 51043,
-      "steps": [
-       [
-        140,
-        0
-       ],
-       [
-        265,
-        0
-       ],
-       [
-        396,
-        0
-       ],
-       [
-        522,
-        0
-       ],
-       [
-        648,
-        0
-       ],
-       [
-        772,
-        0
-       ],
-       [
-        895,
-        0
-       ],
-       [
-        1020,
-        0
-       ],
-       [
-        1142,
-        0
-       ],
-       [
-        1266,
-        0
-       ],
-       [
-        1393,
-        0
-       ],
-       [
-        1521,
-        0
-       ],
-       [
-        1645,
-        0
-       ],
-       [
-        1772,
-        0
-       ],
-       [
-        1895,
-        0
-       ],
-       [
-        2022,
-        0
-       ],
-       [
-        2147,
-        0
-       ],
-       [
-        2270,
-        0
-       ],
-       [
-        2390,
-        0
-       ],
-       [
-        2522,
-        0
-       ],
-       [
-        2647,
-        0
-       ],
-       [
-        2773,
-        0
-       ],
-       [
-        2897,
-        0
-       ],
-       [
-        3022,
-        0
-       ],
-       [
-        3147,
-        0
-       ],
-       [
-        3265,
-        0
-       ],
-       [
-        3394,
-        0
-       ]
-      ]
-     },
-     "title": {
-      "pixels": 628,
-      "steps": [
-       [
-        140,
-        0
-       ],
-       [
-        265,
-        0
-       ],
-       [
-        396,
-        0
-       ],
-       [
-        522,
-        0
-       ],
-       [
-        648,
-        0
-       ],
-       [
-        772,
-        0
-       ],
-       [
-        895,
-        0
-       ],
-       [
-        1020,
-        0
-       ],
-       [
-        1142,
-        0
-       ],
-       [
-        1266,
-        0
-       ],
-       [
-        1393,
-        0
-       ],
-       [
-        1521,
-        0
-       ],
-       [
-        1645,
-        0
-       ],
-       [
-        1772,
-        0
-       ],
-       [
-        1895,
-        0
-       ],
-       [
-        2022,
-        0
-       ],
-       [
-        2147,
-        0
-       ],
-       [
-        2270,
-        0
-       ],
-       [
-        2390,
-        0
-       ],
-       [
-        2522,
-        0
-       ],
-       [
-        2647,
-        0
-       ],
-       [
-        2773,
-        0
-       ],
-       [
-        2897,
-        0
-       ],
-       [
-        3022,
-        0
-       ],
-       [
-        3147,
-        0
-       ],
-       [
-        3265,
-        0
-       ],
-       [
-        3394,
-        0
-       ]
-      ]
-     }
-    },
-    "assets": {
-     "app.css": "5d442c22213b545048fc260254cafc7eee73e3a67f8234ea0e861ab427f86209",
-     "look-home.css": "2a1671cb7b216b0ab10471a15ea2f410a711486c020bcd96aa6ab4f4dce08975",
-     "look-calendar.css": "ce849c90bc8ec101c150eb0d16ae0385e003841c1d05aab61680bca6c988c46c",
-     "look-order.css": "08335cf3398d9f78ec7d813a25e3fee1556fdbb80d30560dfdd93e4cffb33b2f",
-     "look-team.css": "e0fe3cd4ea4d8fe1c3c8f1ea24aa92a2bdae9f2558c35b43fe0b357141e819ab",
-     "look-records.css": "e5396fa4fbd3645f0bd28ab175c3abc99c334436c0a2a881165ebf452ccd167e",
-     "colour.css": "2e92fab599f9800a766b350b27cc54d3aed14207c65dbede84465cb305252ea7",
-     "swarm.css": "12ee29f0d12215967f7344727b0d8af6fd3af24f4f87ce8e321035b0074c7bad",
-     "icons.js": "af958d0b8fd32168a1d2db3a4450927cf3d20c1fd2eb4d0dc559f4d64820fc1b",
-     "status.js": "ea2b20db35b62d8b21432a95f54fe2b4ce0b8372969d8e6763b515c695a5ee5d",
-     "board.js": "e9f6c686b67852bb6838dbfcaf06a64385cf6ed44f2d03f10d67b6b93cf509ed",
-     "swarm.js": "d4cb9c903f61abd152e9990f31d46dc93779e6f2eb2b2fe200aa9b11754a7538",
-     "app.js": "10197c26491b394c131268b4d62255669783cd5d17b75bb849bfe4cc11a01e57"
-    },
-    "runtime": "2ecfe60effc082a173d40390fbccbf707de634ae07cc27c2bdf851b5ae8e8bb1"
-   },
-   "after": {
     "normal": {
      "background": {
       "pixels": 50669,
       "steps": [
        [
-        152,
-        11288
+        153,
+        14155
        ],
        [
-        277,
-        17731
+        282,
+        20067
        ],
        [
-        402,
-        17644
+        405,
+        15960
        ],
        [
-        526,
-        18679
+        532,
+        19668
        ],
        [
-        652,
-        19782
+        653,
+        18582
        ],
        [
-        776,
-        23999
+        783,
+        25629
        ],
        [
         903,
-        34994
+        32911
        ],
        [
-        1028,
-        39416
+        1034,
+        40101
        ],
        [
-        1152,
-        38498
+        1150,
+        37113
        ],
        [
-        1277,
-        34963
+        1275,
+        35664
        ],
        [
-        1401,
-        31130
+        1399,
+        31213
        ],
        [
-        1527,
-        27691
+        1525,
+        27826
        ],
        [
-        1650,
-        18919
+        1649,
+        19957
        ],
        [
         1776,
-        13842
+        13111
        ],
        [
-        1903,
-        30201
+        1900,
+        29085
        ],
        [
-        2026,
-        37975
+        2024,
+        37436
        ],
        [
         2150,
-        39774
+        39624
        ],
        [
-        2276,
-        40472
+        2273,
+        40322
        ],
        [
-        2399,
-        41338
+        2400,
+        41319
        ],
        [
-        2526,
-        42306
+        2523,
+        42095
        ],
        [
-        2651,
-        42157
+        2649,
+        42380
        ],
        [
-        2775,
-        32188
+        2776,
+        33835
        ],
        [
-        2902,
-        12050
+        2900,
+        13781
        ],
        [
-        3029,
-        1889
+        3025,
+        2184
        ],
        [
-        3152,
-        332
+        3151,
+        368
        ],
        [
-        3274,
-        853
+        3275,
+        757
        ],
        [
-        3402,
-        12474
+        3400,
+        10567
        ],
        [
-        3526,
-        33272
+        3525,
+        32264
        ],
        [
-        3651,
-        42190
+        3650,
+        41838
        ],
        [
-        3777,
-        41611
+        3775,
+        41854
        ],
        [
         3901,
-        41091
+        40970
        ],
        [
-        4027,
-        40563
+        4025,
+        40701
        ],
        [
-        4149,
-        37391
+        4150,
+        37666
        ],
        [
-        4276,
-        30046
+        4274,
+        30364
        ],
        [
-        4401,
-        10968
+        4400,
+        13290
        ],
        [
-        4526,
-        0
+        4524,
+        1
        ],
        [
-        4652,
-        7515
+        4650,
+        6987
        ],
        [
         4776,
-        24368
+        24158
        ],
        [
-        4902,
-        35277
+        4900,
+        34330
        ],
        [
-        5026,
-        39593
+        5024,
+        39313
        ],
        [
-        5151,
-        40961
+        5150,
+        41106
        ],
        [
-        5276,
-        40873
+        5275,
+        40995
        ],
        [
-        5401,
-        40737
+        5400,
+        40684
        ],
        [
-        5525,
-        32180
+        5524,
+        33419
        ],
        [
         5651,
-        18181
+        18448
        ],
        [
-        5776,
-        10649
+        5774,
+        11171
        ],
        [
         5901,
-        5334
+        5445
        ],
        [
         6026,
-        6551
+        6305
        ],
        [
-        6152,
-        13659
+        6149,
+        13363
        ],
        [
-        6276,
-        28530
+        6275,
+        27719
        ],
        [
-        6401,
-        40765
+        6404,
+        39834
        ],
        [
-        6527,
-        42142
+        6532,
+        42700
        ],
        [
         6652,
-        41344
+        40871
        ],
        [
-        6776,
-        40796
+        6782,
+        41265
        ],
        [
-        6900,
-        40071
+        6903,
+        39574
        ],
        [
-        7026,
-        40562
+        7034,
+        41480
        ],
        [
-        7152,
-        37546
+        7154,
+        35916
        ],
        [
         7278,
-        31655
+        31842
        ],
        [
-        7402,
-        27214
+        7404,
+        27695
        ],
        [
-        7526,
-        27270
+        7529,
+        27452
        ],
        [
-        7651,
-        28353
+        7658,
+        29055
        ],
        [
-        7777,
-        29059
+        7778,
+        27630
        ],
        [
-        7902,
-        30951
+        7905,
+        32787
        ],
        [
-        8027,
-        32549
+        8025,
+        30511
        ],
        [
-        8157,
-        29106
+        8151,
+        29355
        ],
        [
-        8276,
-        22181
+        8275,
+        22090
        ],
        [
-        8401,
-        21764
+        8400,
+        21716
        ],
        [
-        8526,
-        23330
+        8524,
+        22690
        ]
       ]
      },
@@ -40642,276 +40446,276 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
       "pixels": 628,
       "steps": [
        [
-        152,
-        340
+        153,
+        323
        ],
        [
-        277,
-        493
+        282,
+        478
        ],
        [
-        402,
-        522
+        405,
+        529
        ],
        [
-        526,
-        514
+        532,
+        459
        ],
        [
-        652,
-        447
-       ],
-       [
-        776,
-        516
-       ],
-       [
-        903,
-        510
-       ],
-       [
-        1028,
-        538
-       ],
-       [
-        1152,
-        549
-       ],
-       [
-        1277,
-        577
-       ],
-       [
-        1401,
-        584
-       ],
-       [
-        1527,
-        597
-       ],
-       [
-        1650,
-        581
-       ],
-       [
-        1776,
-        589
-       ],
-       [
-        1903,
-        612
-       ],
-       [
-        2026,
-        606
-       ],
-       [
-        2150,
-        613
-       ],
-       [
-        2276,
-        621
-       ],
-       [
-        2399,
-        612
-       ],
-       [
-        2526,
-        616
-       ],
-       [
-        2651,
-        568
-       ],
-       [
-        2775,
-        599
-       ],
-       [
-        2902,
-        609
-       ],
-       [
-        3029,
-        595
-       ],
-       [
-        3152,
-        607
-       ],
-       [
-        3274,
-        593
-       ],
-       [
-        3402,
-        584
-       ],
-       [
-        3526,
+        653,
         481
        ],
        [
-        3651,
-        438
+        783,
+        503
        ],
        [
-        3777,
+        903,
+        515
+       ],
+       [
+        1034,
+        528
+       ],
+       [
+        1150,
+        555
+       ],
+       [
+        1275,
+        579
+       ],
+       [
+        1399,
+        588
+       ],
+       [
+        1525,
+        595
+       ],
+       [
+        1649,
+        586
+       ],
+       [
+        1776,
+        585
+       ],
+       [
+        1900,
+        614
+       ],
+       [
+        2024,
+        607
+       ],
+       [
+        2150,
+        611
+       ],
+       [
+        2273,
+        626
+       ],
+       [
+        2400,
+        616
+       ],
+       [
+        2523,
+        616
+       ],
+       [
+        2649,
+        560
+       ],
+       [
+        2776,
+        597
+       ],
+       [
+        2900,
+        613
+       ],
+       [
+        3025,
+        595
+       ],
+       [
+        3151,
+        605
+       ],
+       [
+        3275,
+        595
+       ],
+       [
+        3400,
+        587
+       ],
+       [
+        3525,
+        480
+       ],
+       [
+        3650,
+        445
+       ],
+       [
+        3775,
         376
        ],
        [
         3901,
-        134
+        181
        ],
        [
-        4027,
+        4025,
         0
        ],
        [
-        4149,
+        4150,
         0
        ],
        [
-        4276,
-        225
+        4274,
+        192
        ],
        [
-        4401,
-        383
+        4400,
+        372
        ],
        [
-        4526,
-        460
+        4524,
+        443
        ],
        [
-        4652,
-        491
+        4650,
+        481
        ],
        [
         4776,
-        589
-       ],
-       [
-        4902,
-        595
-       ],
-       [
-        5026,
-        603
-       ],
-       [
-        5151,
-        593
-       ],
-       [
-        5276,
-        612
-       ],
-       [
-        5401,
-        595
-       ],
-       [
-        5525,
-        569
-       ],
-       [
-        5651,
-        618
-       ],
-       [
-        5776,
-        618
-       ],
-       [
-        5901,
-        627
-       ],
-       [
-        6026,
-        613
-       ],
-       [
-        6152,
-        603
-       ],
-       [
-        6276,
-        614
-       ],
-       [
-        6401,
         587
        ],
        [
-        6527,
+        4900,
+        593
+       ],
+       [
+        5024,
+        602
+       ],
+       [
+        5150,
+        592
+       ],
+       [
+        5275,
+        613
+       ],
+       [
+        5400,
+        597
+       ],
+       [
+        5524,
+        561
+       ],
+       [
+        5651,
+        616
+       ],
+       [
+        5774,
+        616
+       ],
+       [
+        5901,
+        626
+       ],
+       [
+        6026,
+        611
+       ],
+       [
+        6149,
+        606
+       ],
+       [
+        6275,
+        614
+       ],
+       [
+        6404,
+        585
+       ],
+       [
+        6532,
         586
        ],
        [
         6652,
-        588
+        594
        ],
        [
-        6776,
-        588
+        6782,
+        587
        ],
        [
-        6900,
-        579
+        6903,
+        580
        ],
        [
-        7026,
-        555
+        7034,
+        552
        ],
        [
-        7152,
-        532
+        7154,
+        530
        ],
        [
         7278,
-        503
+        506
        ],
        [
-        7402,
-        449
+        7404,
+        451
        ],
        [
-        7526,
-        340
+        7529,
+        352
        ],
        [
-        7651,
-        114
+        7658,
+        198
        ],
        [
-        7777,
+        7778,
         53
        ],
        [
-        7902,
-        22
+        7905,
+        30
        ],
        [
-        8027,
+        8025,
         0
        ],
        [
-        8157,
+        8151,
         1
        ],
        [
-        8276,
-        34
+        8275,
+        31
        ],
        [
-        8401,
-        54
+        8400,
+        52
        ],
        [
-        8526,
-        179
+        8524,
+        168
        ]
       ]
      }
@@ -40921,47 +40725,47 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
       "pixels": 51043,
       "steps": [
        [
-        143,
+        147,
         0
        ],
        [
-        267,
+        266,
         0
        ],
        [
-        394,
+        391,
         0
        ],
        [
-        518,
+        522,
         0
        ],
        [
-        643,
+        642,
         0
        ],
        [
-        768,
+        766,
         0
        ],
        [
-        898,
+        891,
         0
        ],
        [
-        1026,
+        1022,
         0
        ],
        [
-        1151,
+        1146,
         0
        ],
        [
-        1273,
+        1266,
         0
        ],
        [
-        1394,
+        1392,
         0
        ],
        [
@@ -40969,11 +40773,11 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
         0
        ],
        [
-        1645,
+        1642,
         0
        ],
        [
-        1768,
+        1772,
         0
        ],
        [
@@ -40981,31 +40785,31 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
         0
        ],
        [
-        2018,
+        2033,
         0
        ],
        [
-        2145,
+        2152,
         0
        ],
        [
-        2269,
+        2285,
         0
        ],
        [
-        2394,
+        2397,
         0
        ],
        [
-        2534,
+        2522,
         0
        ],
        [
-        2644,
+        2643,
         0
        ],
        [
-        2780,
+        2776,
         0
        ],
        [
@@ -41013,19 +40817,19 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
         0
        ],
        [
-        3026,
+        3017,
         0
        ],
        [
-        3145,
+        3143,
         0
        ],
        [
-        3269,
+        3272,
         0
        ],
        [
-        3394,
+        3397,
         0
        ]
       ]
@@ -41034,47 +40838,47 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
       "pixels": 627,
       "steps": [
        [
-        143,
+        147,
         0
        ],
        [
-        267,
+        266,
         0
        ],
        [
-        394,
+        391,
         0
        ],
        [
-        518,
+        522,
         0
        ],
        [
-        643,
+        642,
         0
        ],
        [
-        768,
+        766,
         0
        ],
        [
-        898,
+        891,
         0
        ],
        [
-        1026,
+        1022,
         0
        ],
        [
-        1151,
+        1146,
         0
        ],
        [
-        1273,
+        1266,
         0
        ],
        [
-        1394,
+        1392,
         0
        ],
        [
@@ -41082,11 +40886,11 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
         0
        ],
        [
-        1645,
+        1642,
         0
        ],
        [
-        1768,
+        1772,
         0
        ],
        [
@@ -41094,31 +40898,31 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
         0
        ],
        [
-        2018,
+        2033,
         0
        ],
        [
-        2145,
+        2152,
         0
        ],
        [
-        2269,
+        2285,
         0
        ],
        [
-        2394,
+        2397,
         0
        ],
        [
-        2534,
+        2522,
         0
        ],
        [
-        2644,
+        2643,
         0
        ],
        [
-        2780,
+        2776,
         0
        ],
        [
@@ -41126,19 +40930,19 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
         0
        ],
        [
-        3026,
+        3017,
         0
        ],
        [
-        3145,
+        3143,
         0
        ],
        [
-        3269,
+        3272,
         0
        ],
        [
-        3394,
+        3397,
         0
        ]
       ]
@@ -41160,6 +40964,808 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "app.js": "e24f7be1f139f3bdefc7174160883bad689761c1deadb738e0091193c9e4d23d"
     },
     "runtime": "5cb2504c4dfd5788fb928101caffb7bd8bab78d8c64317fe57a707ed87045898"
+   },
+   "after": {
+    "normal": {
+     "background": {
+      "pixels": 50669,
+      "steps": [
+       [
+        148,
+        13421
+       ],
+       [
+        273,
+        17807
+       ],
+       [
+        399,
+        17964
+       ],
+       [
+        524,
+        18896
+       ],
+       [
+        649,
+        20387
+       ],
+       [
+        773,
+        26421
+       ],
+       [
+        898,
+        36263
+       ],
+       [
+        1024,
+        39425
+       ],
+       [
+        1149,
+        37937
+       ],
+       [
+        1273,
+        34174
+       ],
+       [
+        1399,
+        31139
+       ],
+       [
+        1523,
+        25570
+       ],
+       [
+        1649,
+        18512
+       ],
+       [
+        1773,
+        14954
+       ],
+       [
+        1898,
+        33305
+       ],
+       [
+        2023,
+        38519
+       ],
+       [
+        2148,
+        39728
+       ],
+       [
+        2273,
+        40927
+       ],
+       [
+        2398,
+        41429
+       ],
+       [
+        2523,
+        42366
+       ],
+       [
+        2649,
+        41426
+       ],
+       [
+        2774,
+        28152
+       ],
+       [
+        2899,
+        8527
+       ],
+       [
+        3024,
+        1371
+       ],
+       [
+        3149,
+        254
+       ],
+       [
+        3274,
+        1888
+       ],
+       [
+        3398,
+        16025
+       ],
+       [
+        3524,
+        35798
+       ],
+       [
+        3648,
+        42525
+       ],
+       [
+        3774,
+        41529
+       ],
+       [
+        3899,
+        40902
+       ],
+       [
+        4024,
+        40353
+       ],
+       [
+        4148,
+        36353
+       ],
+       [
+        4273,
+        27203
+       ],
+       [
+        4398,
+        4659
+       ],
+       [
+        4523,
+        2
+       ],
+       [
+        4649,
+        12201
+       ],
+       [
+        4774,
+        27509
+       ],
+       [
+        4899,
+        36302
+       ],
+       [
+        5023,
+        39840
+       ],
+       [
+        5149,
+        41102
+       ],
+       [
+        5274,
+        40944
+       ],
+       [
+        5398,
+        39828
+       ],
+       [
+        5524,
+        28825
+       ],
+       [
+        5648,
+        16070
+       ],
+       [
+        5774,
+        9265
+       ],
+       [
+        5898,
+        5221
+       ],
+       [
+        6024,
+        7490
+       ],
+       [
+        6149,
+        17292
+       ],
+       [
+        6274,
+        31151
+       ],
+       [
+        6399,
+        41466
+       ],
+       [
+        6523,
+        41970
+       ],
+       [
+        6648,
+        41149
+       ],
+       [
+        6773,
+        40476
+       ],
+       [
+        6898,
+        40451
+       ],
+       [
+        7023,
+        40435
+       ],
+       [
+        7148,
+        36404
+       ],
+       [
+        7273,
+        30728
+       ],
+       [
+        7399,
+        27005
+       ],
+       [
+        7523,
+        27599
+       ],
+       [
+        7649,
+        28350
+       ],
+       [
+        7774,
+        29629
+       ],
+       [
+        7898,
+        31294
+       ],
+       [
+        8024,
+        32579
+       ],
+       [
+        8149,
+        27053
+       ],
+       [
+        8273,
+        21889
+       ],
+       [
+        8399,
+        21735
+       ],
+       [
+        8523,
+        23741
+       ]
+      ]
+     },
+     "title": {
+      "pixels": 628,
+      "steps": [
+       [
+        148,
+        361
+       ],
+       [
+        273,
+        514
+       ],
+       [
+        399,
+        546
+       ],
+       [
+        524,
+        446
+       ],
+       [
+        649,
+        524
+       ],
+       [
+        773,
+        472
+       ],
+       [
+        898,
+        514
+       ],
+       [
+        1024,
+        543
+       ],
+       [
+        1149,
+        562
+       ],
+       [
+        1273,
+        571
+       ],
+       [
+        1399,
+        576
+       ],
+       [
+        1523,
+        595
+       ],
+       [
+        1649,
+        567
+       ],
+       [
+        1773,
+        607
+       ],
+       [
+        1898,
+        601
+       ],
+       [
+        2023,
+        610
+       ],
+       [
+        2148,
+        608
+       ],
+       [
+        2273,
+        613
+       ],
+       [
+        2398,
+        605
+       ],
+       [
+        2523,
+        613
+       ],
+       [
+        2649,
+        577
+       ],
+       [
+        2774,
+        606
+       ],
+       [
+        2899,
+        601
+       ],
+       [
+        3024,
+        593
+       ],
+       [
+        3149,
+        607
+       ],
+       [
+        3274,
+        597
+       ],
+       [
+        3398,
+        554
+       ],
+       [
+        3524,
+        473
+       ],
+       [
+        3648,
+        431
+       ],
+       [
+        3774,
+        354
+       ],
+       [
+        3899,
+        72
+       ],
+       [
+        4024,
+        0
+       ],
+       [
+        4148,
+        5
+       ],
+       [
+        4273,
+        230
+       ],
+       [
+        4398,
+        392
+       ],
+       [
+        4523,
+        460
+       ],
+       [
+        4649,
+        506
+       ],
+       [
+        4774,
+        594
+       ],
+       [
+        4899,
+        597
+       ],
+       [
+        5023,
+        603
+       ],
+       [
+        5149,
+        593
+       ],
+       [
+        5274,
+        617
+       ],
+       [
+        5398,
+        589
+       ],
+       [
+        5524,
+        598
+       ],
+       [
+        5648,
+        615
+       ],
+       [
+        5774,
+        611
+       ],
+       [
+        5898,
+        620
+       ],
+       [
+        6024,
+        608
+       ],
+       [
+        6149,
+        594
+       ],
+       [
+        6274,
+        612
+       ],
+       [
+        6399,
+        571
+       ],
+       [
+        6523,
+        586
+       ],
+       [
+        6648,
+        589
+       ],
+       [
+        6773,
+        585
+       ],
+       [
+        6898,
+        581
+       ],
+       [
+        7023,
+        550
+       ],
+       [
+        7148,
+        530
+       ],
+       [
+        7273,
+        501
+       ],
+       [
+        7399,
+        430
+       ],
+       [
+        7523,
+        331
+       ],
+       [
+        7649,
+        93
+       ],
+       [
+        7774,
+        49
+       ],
+       [
+        7898,
+        6
+       ],
+       [
+        8024,
+        0
+       ],
+       [
+        8149,
+        0
+       ],
+       [
+        8273,
+        35
+       ],
+       [
+        8399,
+        68
+       ],
+       [
+        8523,
+        208
+       ]
+      ]
+     }
+    },
+    "reduce": {
+     "background": {
+      "pixels": 51043,
+      "steps": [
+       [
+        140,
+        0
+       ],
+       [
+        265,
+        0
+       ],
+       [
+        390,
+        0
+       ],
+       [
+        515,
+        0
+       ],
+       [
+        640,
+        0
+       ],
+       [
+        765,
+        0
+       ],
+       [
+        895,
+        0
+       ],
+       [
+        1015,
+        0
+       ],
+       [
+        1141,
+        0
+       ],
+       [
+        1265,
+        0
+       ],
+       [
+        1390,
+        0
+       ],
+       [
+        1515,
+        0
+       ],
+       [
+        1640,
+        0
+       ],
+       [
+        1765,
+        0
+       ],
+       [
+        1895,
+        0
+       ],
+       [
+        2015,
+        0
+       ],
+       [
+        2144,
+        0
+       ],
+       [
+        2265,
+        0
+       ],
+       [
+        2390,
+        0
+       ],
+       [
+        2515,
+        0
+       ],
+       [
+        2645,
+        0
+       ],
+       [
+        2765,
+        0
+       ],
+       [
+        2890,
+        0
+       ],
+       [
+        3015,
+        0
+       ],
+       [
+        3145,
+        0
+       ],
+       [
+        3269,
+        0
+       ],
+       [
+        3390,
+        0
+       ]
+      ]
+     },
+     "title": {
+      "pixels": 627,
+      "steps": [
+       [
+        140,
+        0
+       ],
+       [
+        265,
+        0
+       ],
+       [
+        390,
+        0
+       ],
+       [
+        515,
+        0
+       ],
+       [
+        640,
+        0
+       ],
+       [
+        765,
+        0
+       ],
+       [
+        895,
+        0
+       ],
+       [
+        1015,
+        0
+       ],
+       [
+        1141,
+        0
+       ],
+       [
+        1265,
+        0
+       ],
+       [
+        1390,
+        0
+       ],
+       [
+        1515,
+        0
+       ],
+       [
+        1640,
+        0
+       ],
+       [
+        1765,
+        0
+       ],
+       [
+        1895,
+        0
+       ],
+       [
+        2015,
+        0
+       ],
+       [
+        2144,
+        0
+       ],
+       [
+        2265,
+        0
+       ],
+       [
+        2390,
+        0
+       ],
+       [
+        2515,
+        0
+       ],
+       [
+        2645,
+        0
+       ],
+       [
+        2765,
+        0
+       ],
+       [
+        2890,
+        0
+       ],
+       [
+        3015,
+        0
+       ],
+       [
+        3145,
+        0
+       ],
+       [
+        3269,
+        0
+       ],
+       [
+        3390,
+        0
+       ]
+      ]
+     }
+    },
+    "assets": {
+     "app.css": "5d442c22213b545048fc260254cafc7eee73e3a67f8234ea0e861ab427f86209",
+     "look-home.css": "3742dfbb8815ceb9a79f25cdf8a2479dad0401c53f787523f0830ef37319cee0",
+     "look-calendar.css": "ce849c90bc8ec101c150eb0d16ae0385e003841c1d05aab61680bca6c988c46c",
+     "look-order.css": "08335cf3398d9f78ec7d813a25e3fee1556fdbb80d30560dfdd93e4cffb33b2f",
+     "look-team.css": "41c72bef15dc4acb9679f5f3edbb6c1ff0df8d337203538d7b6635be2d88978e",
+     "look-records.css": "9c82bf8e43b118faa7a34e4d6c260d09b0aacb9605503375759248bcdbc93c7e",
+     "colour.css": "d7bbde2a94e695b8064c01e2342aa69bdfec1f8dba604544306d92518e05dc85",
+     "swarm.css": "12ee29f0d12215967f7344727b0d8af6fd3af24f4f87ce8e321035b0074c7bad",
+     "icons.js": "af958d0b8fd32168a1d2db3a4450927cf3d20c1fd2eb4d0dc559f4d64820fc1b",
+     "status.js": "ea2b20db35b62d8b21432a95f54fe2b4ce0b8372969d8e6763b515c695a5ee5d",
+     "board.js": "e9f6c686b67852bb6838dbfcaf06a64385cf6ed44f2d03f10d67b6b93cf509ed",
+     "swarm.js": "d4cb9c903f61abd152e9990f31d46dc93779e6f2eb2b2fe200aa9b11754a7538",
+     "app.js": "4b41f9296e593347d542510199dbe9b8170d933e6a6b3d6fe140de578bcc6be4"
+    },
+    "runtime": "aad33babe4579d85fee15ba897ff69b2626b0b74e67f3c048499ee66f3852fd9"
    }
   }
  }
@@ -43047,7 +43653,7 @@ e5f65a07bf3e9d03ec5fb039b43131128b00799cc9e7e748858a48a4179db521 tests/format/sp
 f1e5b71a65e07c1543f4cd94912d1b4b570c03f900915e184cccbbb6d48f3307 tests/page_closing_audit.js
 1e65ea51d2007249987209966d57b51914de409b68dcf868b4fff974a8a4e52c tests/page_geometry.js
 931dd3784a3573e82fa1db1b8fcad02f99a2f5ab517df20ac8b031928c416918 tests/page_graph_checks.js
-56fe1f20bad63c193cf204bedf5b5c3018ae349f50aad4ff65dc65e226b6a3a2 tests/page_harness.js
+8328969b5ddbf6f6e395876f077ae8cc4620388a9eaf9674c66d9b493dbe87c0 tests/page_harness.js
 0e652baf84648da4b6f303b2108477db82c0505ca79914ef9a6b5d1a29acb07d tests/page_home_regressions.js
 7417f2d3ae672f622ee3c03c6b07cc59f3393a6d92ee9b28583d3c58f29e7df6 tests/page_ink_system.js
 280caa764155fd91977c4b5a551004ae074983873851f043bd95b97ffc6a6617 tests/page_library_loop.js
@@ -43094,18 +43700,18 @@ edabc8ce7d7bf61d4ecd36c6af60f1f2b85aa7a8a1e1c16c8e4402dc80f8adb3 tools/quality_b
 299dbc95507d6d081c4b188a7841bdc228a37aec4f193d1de235945087256a77 tools/quality_policy.json
 0bf27d88366d574fe48425f4b2db3b2549de673640d828c898d0f468f64c8e28 tools/quality_v1.sha256
 5d442c22213b545048fc260254cafc7eee73e3a67f8234ea0e861ab427f86209 web/app.css
-e24f7be1f139f3bdefc7174160883bad689761c1deadb738e0091193c9e4d23d web/app.js
+4b41f9296e593347d542510199dbe9b8170d933e6a6b3d6fe140de578bcc6be4 web/app.js
 e9f6c686b67852bb6838dbfcaf06a64385cf6ed44f2d03f10d67b6b93cf509ed web/board.js
 d7bbde2a94e695b8064c01e2342aa69bdfec1f8dba604544306d92518e05dc85 web/colour.css
 2219b6976077d91c736e260e16f223f406772bfbf78781923c231f85b1adbcde web/format.mjs
 af958d0b8fd32168a1d2db3a4450927cf3d20c1fd2eb4d0dc559f4d64820fc1b web/icons.js
-94a2bafd0d0bb8be88a3f84f099e32c9c85d660748fc32fc121173a34a5518ae web/index.html
+e8975cfc00c9b07b7114fe2d44a963fd549f36d8333eae63d7c80615d90b4985 web/index.html
 ce849c90bc8ec101c150eb0d16ae0385e003841c1d05aab61680bca6c988c46c web/look-calendar.css
-2a1671cb7b216b0ab10471a15ea2f410a711486c020bcd96aa6ab4f4dce08975 web/look-home.css
+3742dfbb8815ceb9a79f25cdf8a2479dad0401c53f787523f0830ef37319cee0 web/look-home.css
 08335cf3398d9f78ec7d813a25e3fee1556fdbb80d30560dfdd93e4cffb33b2f web/look-order.css
-e5396fa4fbd3645f0bd28ab175c3abc99c334436c0a2a881165ebf452ccd167e web/look-records.css
-e0fe3cd4ea4d8fe1c3c8f1ea24aa92a2bdae9f2558c35b43fe0b357141e819ab web/look-team.css
-dff3ffda6a17e2add48743971f943a3bcc80784ce7a7681b698557d02c985433 web/quality-data.json
+9c82bf8e43b118faa7a34e4d6c260d09b0aacb9605503375759248bcdbc93c7e web/look-records.css
+41c72bef15dc4acb9679f5f3edbb6c1ff0df8d337203538d7b6635be2d88978e web/look-team.css
+5a610ee96e11ff5c076b51a669e229d7b28bfac9c71daa81bafddee14ffb96e5 web/quality-data.json
 2f48c86410f410a49509f82dd55defe7999f0ae4b586a8af3b76a9ea24cdf3b0 web/quality.css
 9f6274322ba2642e9eeaebe3751e9dd013e8700f720e73571755f621e9c82db9 web/quality.html
 4dbbba02c54ee09eeed687b4030f8c80ae72e0948b0df2efa1d14a3deb5c6383 web/quality.js
