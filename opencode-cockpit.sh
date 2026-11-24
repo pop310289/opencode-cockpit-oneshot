@@ -27125,11 +27125,12 @@ import * as F from './format.mjs';
   }
   // The canvas uses actor ids for people and order ids for work. Focus remains independent.
   function workIcon(p, doc, size) {
-    var paint = seatPaint(p, doc.run), icon = svg('svg', {viewBox: '0 0 40 40', width: size || 28, height: size || 28, 'data-canvas-icon': p.actor || 'order', 'aria-hidden': 'true', 'class': 'work-icon'});
-    icon.appendChild(svg('rect', {width: 40, height: 40, rx: 8, style: 'fill:var(' + (paint ? '--seat-' + paint['data-seat-slot'] + '-wash' : '--wash') + ')'}));
+    var icon = svg('svg', {viewBox: '0 0 40 40', width: size || 28, height: size || 28, 'data-canvas-icon': p.actor || 'order', 'aria-hidden': 'true', 'class': 'work-icon'});
+    icon.appendChild(svg('rect', {width: 40, height: 40, rx: 9, fill: 'var(--wash)'}));
     var path = p.actor === doc.ceo ? 'M14 13 A6 6 0 1 0 12 13 M9 32 C9 20 31 20 31 32' :
       p.actor === doc.judge ? 'M30 20 A10 10 0 1 1 30 19.9 M14 20 L18 24 L26 15' :
       p.actor === doc.lead ? 'M16 8 H24 V16 H16 Z M20 16 V23 M10 23 H30 M10 23 V31 M30 23 V31 M6 31 H14 M26 31 H34' :
+      p.actor ? 'M9 10 H31 V28 H9 Z M14 16 L18 19 L14 22 M21 22 H26 M16 32 H24' :
       'M11 8 H24 L30 14 V32 H11 Z M24 8 V14 H30 M16 20 H25 M16 25 H23';
     icon.appendChild(svg('path', {d: path, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round'})); return p.actor ? seatLaunchControl(icon, p, doc.run) : icon;
   }
@@ -27384,7 +27385,8 @@ import * as F from './format.mjs';
       list.appendChild(h('p', {'class': 'group-heading'}, group[0]));
       items.forEach(function (n) {
         var b = h('button', {'data-canvas-item': n.id, 'data-name': n.name, 'class': 'quiet', type: 'button', title: n.name, 'aria-pressed': String(C.selected === n.id)},
-          n.kind === 'order' ? workIcon({}, doc, 24) : null, n.kind === 'order' ? h('span', {'class': 'cut-text'}, n.name) : seatChip(n.p, doc.run), h('i', {'class': 'dot', 'data-status': n.order ? category((source.orders[n.id] || {}).state) : canvasState(n, doc, source).textContent === 'Working' ? 'running' : 'waiting', 'aria-hidden': 'true'}));
+          n.kind === 'order' ? workIcon({}, doc, 24) : null, n.kind === 'order' ? h('span', {'class': 'cut-text'}, n.name) : seatChip(n.p, doc.run),
+          n.order ? null : h('i', {'class': 'dot', 'data-status': canvasState(n, doc, source).getAttribute('data-state'), 'aria-hidden': 'true'}));
         if (n.order) { b.appendChild(attrs(canvasState(n, doc, source), {'data-canvas-list-state': n.id})); }
         on(b, 'click', function () { canvasSelect(n.id); }); list.appendChild(b);
       });
@@ -27402,7 +27404,7 @@ import * as F from './format.mjs';
     });
     view.appendChild(wires);
     model.nodes.forEach(function (n) {
-      var node = h('button', {'data-canvas-node': n.id, 'data-kind': n.kind, 'data-name': n.name, 'data-run': n.order ? doc.run : null, 'data-order': n.order ? n.id : null, 'data-replay': source.future[n.id] ? 'future' : null, type: 'button',
+      var node = h('button', {'data-canvas-node': n.id, 'data-kind': n.kind, 'data-seat-tone': seatTone(n.p, doc.run), 'data-name': n.name, 'data-run': n.order ? doc.run : null, 'data-order': n.order ? n.id : null, 'data-replay': source.future[n.id] ? 'future' : null, type: 'button',
         'aria-pressed': String(C.selected === n.id), title: n.name + (n.order ? '' : ' / ' + n.p.model), style: 'left:' + n.x + 'px;top:' + n.y + 'px;width:' + n.w + 'px;height:' + n.h + 'px'},
         workIcon(n.order ? {} : n.p, doc, n.order ? 16 : 28), h('strong', {'class': 'cut-text'}, n.name),
         n.order ? null : h('span', {'class': 'hint cut-text', title: n.p.model}, n.p.model), canvasState(n, doc, source));
@@ -27464,7 +27466,7 @@ import * as F from './format.mjs';
       var labels = Array.from(track.querySelectorAll('.gantt-duration')), width = track.clientWidth, edge = 4, gap = 8;
       if (!width || !labels.length) { return; }
       var placed = labels.map(function (label) {
-        var size = label.offsetWidth, desired = (1 - Number(label.getAttribute('data-duration-fit'))) * width;
+        var size = label.offsetWidth, desired = (1 - Number(label.getAttribute('data-duration-fit'))) * width - size / 2;
         var left = Math.max(edge, Math.min(width - size - 4, desired));
         left = Math.max(edge, left); edge = left + size + gap;
         return {label: label, left: left, width: size};
@@ -27503,13 +27505,14 @@ import * as F from './format.mjs';
             'data-replay': future ? 'future' : null, title: ((source.layoutOrders[item.l.order] || {}).title || item.l.order) + ', ' + duration,
             style: 'left:min(calc(100% - 10px),' + start / length * 100 + '%);width:max(10px,' + Math.max(0, drawnEnd - start) / length * 100 + '%);max-width:max(10px,' + (1 - start / length) * 100 + '%);top:8px'}));
           if (!source.past || finish <= source.position) {
-            track.appendChild(h('span', {'class': 'gantt-duration', 'data-gantt-duration': item.l.n || item.l.launch, title: 'Launch ' + F.count(item.l.n || item.l.launch) + ': ' + duration, 'data-duration-fit': 1 - finish / length, style: 'left:calc(' + finish / length * 100 + '% + 8px)'}, duration));
+            var midpoint = (start + finish) / (2 * length);
+            track.appendChild(h('span', {'class': 'gantt-duration', 'data-gantt-duration': item.l.n || item.l.launch, title: 'Launch ' + F.count(item.l.n || item.l.launch) + ': ' + duration, 'data-duration-fit': 1 - midpoint, style: 'left:' + midpoint * 100 + '%'}, duration));
           }
         });
         if (!groups[actor].length) { lanes.appendChild(empty('Timing unavailable.', 'This launch has no recorded timestamps.')); }
         content.appendChild(group);
       });
-      content.appendChild(h('span', {'data-gantt-cursor': source.position.toFixed(1), 'class': 'gantt-cursor', title: 'Replay position: ' + fixedNumber(source.position, 1) + ' s', style: 'left:calc(160px + (100% - 176px) * ' + source.position / length + ');height:' + Object.keys(groups).length * 48 + 'px'}));
+      content.appendChild(h('span', {'data-gantt-cursor': source.position.toFixed(1), 'class': 'gantt-cursor', title: 'Replay position: ' + fixedNumber(source.position, 1) + ' s', style: '--cursor-fraction:' + source.position / length + ';height:' + Object.keys(groups).length * 48 + 'px'}));
       if (!doc.launches.length) { content.appendChild(empty('No launches yet.', 'Launches will share this clock when work begins.')); }
     } else if (C.tab === 'events') {
       rows.forEach(function (r) { content.appendChild(h('div', {'data-canvas-event': r.event.seq, 'class': 'canvas-event', title: person(doc, r.from).name + ' ' + eventVerb(r.event) + ' ' + ((source.layoutOrders[r.order] || {}).title || r.order)},
@@ -27691,6 +27694,12 @@ import * as F from './format.mjs';
     document.querySelectorAll('[data-canvas-node], [data-canvas-item]').forEach(function (e) {
       var selected = String((e.getAttribute('data-canvas-node') || e.getAttribute('data-canvas-item')) === C.selected);
       if (e.getAttribute('aria-pressed') !== selected) { e.setAttribute('aria-pressed', selected); }
+    });
+    var canvas = $('team-canvas-slot');
+    canvas.querySelectorAll('[data-canvas-edge], [data-edge-end]').forEach(function (wire) {
+      var linked = wire.getAttribute('data-from') === C.selected || wire.getAttribute('data-to') === C.selected;
+      if (linked && wire.getAttribute('data-linked') === null) { wire.setAttribute('data-linked', ''); }
+      if (!linked && wire.getAttribute('data-linked') !== null) { wire.removeAttribute('data-linked'); }
     });
     var range = document.querySelector('[data-replay-range]');
     if (range.value !== source.position.toFixed(1)) { range.value = source.position.toFixed(1); }
@@ -30051,7 +30060,7 @@ import * as F from './format.mjs';
     document.documentElement.dataset.route = view;
     // Direct links introduce the hero. Moving to the collection inside the workspace is immediate.
     document.documentElement.dataset.heroIntro = document.documentElement.dataset.motion === 'on' && (view === 'home' || (view === 'library' && !parts[1] && navigation === 1)) ? 'play' : 'quiet';
-    var compact = ['home', 'team', 'board', 'files', 'ledger', 'swarms', 'library'].includes(view);
+    var compact = ['home', 'team', 'board', 'status', 'files', 'ledger', 'swarms', 'library'].includes(view);
     document.documentElement.dataset.layout = compact ? 'responsive' : 'desktop';
     var viewport = $('page-viewport'), width = compact ? 'width=device-width,initial-scale=1' : 'width=1280';
     if (viewport.getAttribute('content') !== width) { viewport.setAttribute('content', width); }
@@ -30573,13 +30582,14 @@ cat > 'web/board.js' <<'OC_EOF_90'
 })(typeof window === 'object' ? window : globalThis);
 OC_EOF_90
 cat > 'web/colour.css' <<'OC_EOF_91'
-/* Colour roles from the kit-color skill: every coloured block uses one of three lightness bands (wash, ink, mark); data colours keep saturation and lightness and change only the hue. Loaded last. */
+/* Colour roles from the kit-color skill: every coloured block uses one of three lightness bands (wash, ink, mark); data colours keep saturation and lightness and change only the hue. */
 html:root body {
-  /* status: wash / ink / mark */
-  --kc-run-wash: #eaf1ff;  --kc-run-ink: #2456d6;  --kc-run-mark: #0190fe;
-  --kc-warn-wash: #fff1e0; --kc-warn-ink: #b25e00; --kc-warn-mark: #f28a2e;
-  --kc-ok-wash: #e6f6ed;   --kc-ok-ink: #1e8a4f;   --kc-ok-mark: #5fc88a;
-  --kc-bad-wash: #fdecea;  --kc-bad-ink: #c4320a;  --kc-bad-mark: #ff6b5f;
+  /* The dot and its label each clear their own contrast threshold on the wash. */
+  --kc-ok-wash: #d8f5e7; --kc-ok-ink: #136247; --kc-ok-mark: #06885c;
+  --kc-run-wash: #e1edff; --kc-run-ink: #204f9e; --kc-run-mark: #306ed0;
+  --kc-warn-wash: #fff0d4; --kc-warn-ink: #834709; --kc-warn-mark: #ad640f;
+  --kc-bad-wash: #ffe6e4; --kc-bad-ink: #993a3a; --kc-bad-mark: #c9494f;
+  --kc-muted-wash: #eef1f5; --kc-muted-ink: #4c586b; --kc-muted-mark: #69778b;
   /* bright marks only (dots, bars, rings, chart lines) */
   --kc-blue: #0190fe; --kc-green: #5fc88a; --kc-amber: #e8b000; --kc-orange: #f28a2e;
   --kc-pink: #ee3e9e; --kc-violet: #a651f0; --kc-teal: #13b3a0; --kc-sky: #14b3f0;
@@ -30613,6 +30623,100 @@ html:root body {
   --seat-6: var(--kc-orange); --seat-6-wash: hsl(22 70% 93%);  --seat-6-light: hsl(22 70% 95%);  --seat-6-ink: hsl(22 48% 36%);
   --level-1: var(--kc-seq-1); --level-2: var(--kc-seq-2); --level-3: var(--kc-seq-3); --level-4: var(--kc-seq-4); --level-5: var(--kc-seq-5);
 }
+
+/* Select the alternate palette only when the host itself uses a dark color scheme. */
+@supports (color: light-dark(white, black)) {
+  html:root body {
+    --kc-ok-wash: light-dark(#d8f5e7, #19473a);
+    --kc-ok-ink: light-dark(#136247, #adf2ce);
+    --kc-ok-mark: light-dark(#06885c, #68d89d);
+    --kc-run-wash: light-dark(#e1edff, #1e375b);
+    --kc-run-ink: light-dark(#204f9e, #c2ddff);
+    --kc-run-mark: light-dark(#306ed0, #83b9ff);
+    --kc-warn-wash: light-dark(#fff0d4, #47341c);
+    --kc-warn-ink: light-dark(#834709, #ffdc9e);
+    --kc-warn-mark: light-dark(#ad640f, #ecae52);
+    --kc-bad-wash: light-dark(#ffe6e4, #4b2a33);
+    --kc-bad-ink: light-dark(#993a3a, #ffc7c7);
+    --kc-bad-mark: light-dark(#c9494f, #ff9197);
+    --kc-muted-wash: light-dark(#eef1f5, #2e3541);
+    --kc-muted-ink: light-dark(#4c586b, #d3dbe8);
+    --kc-muted-mark: light-dark(#69778b, #a7b3c6);
+  }
+}
+
+/* The same recorded state uses the same swatch in the graph, its index and the timeline. */
+:is(.badge, .pill, .dot) {
+  --signal-ink: var(--kc-muted-ink);
+  --signal-mark: var(--kc-muted-mark);
+  --signal-wash: var(--kc-muted-wash);
+  --signal-shape: circle(36%);
+}
+:where(.badge, .pill, .dot):is([data-state=ok], [data-state=SUCCEEDED i], [data-state=done], [data-state=accepted], [data-state=recorded], [data-state=issued], [data-status=done]) {
+  --signal-wash: var(--kc-ok-wash);
+  --signal-ink: var(--kc-ok-ink);
+  --signal-mark: var(--kc-ok-mark);
+  --signal-shape: polygon(0% 55%, 17% 39%, 39% 61%, 83% 12%, 100% 27%, 39% 93%);
+}
+:where(.badge, .pill, .dot):is([data-state=running], [data-state=working], [data-state=LEASED], [data-state=JUDGING], [data-status=running]) {
+  --signal-wash: var(--kc-run-wash);
+  --signal-ink: var(--kc-run-ink);
+  --signal-mark: var(--kc-run-mark);
+}
+:where(.badge, .pill, .dot):is([data-state=attention], [data-state=due], [data-state=proposed], [data-status=attention]) {
+  --signal-wash: var(--kc-warn-wash);
+  --signal-ink: var(--kc-warn-ink);
+  --signal-mark: var(--kc-warn-mark);
+  --signal-shape: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+}
+:where(.badge, .pill, .dot):is([data-state=bad], [data-state=FAILED i], [data-state=DEAD], [data-state=CANCELLED i], [data-state=rejected], [data-state=fatal], [data-state=halted], [data-state=offline], [data-status=failed]) {
+  --signal-wash: var(--kc-bad-wash);
+  --signal-ink: var(--kc-bad-ink);
+  --signal-mark: var(--kc-bad-mark);
+  --signal-shape: polygon(18% 0%, 50% 32%, 82% 0%, 100% 18%, 68% 50%, 100% 82%, 82% 100%, 50% 68%, 18% 100%, 0% 82%, 32% 50%, 0% 18%);
+}
+
+/* Stat cards already frame their figures, so their inset status labels use a lighter rim. */
+#hero-stats { --signal-rim-strength: 6%; }
+
+html:root body :is(main [data-view]:not([hidden]), .seat-drawer, .toast) :is(.badge, .pill)[data-state] {
+  color: var(--signal-ink);
+  background-color: var(--signal-wash);
+  border-radius: .55em;
+  --signal-rim: color-mix(in srgb, transparent, var(--signal-ink) var(--signal-rim-strength, 15%));
+  font-weight: 550;
+  box-shadow: var(--signal-rim) 0 0 0 1px inset;
+  letter-spacing: .002em;
+  gap: .36em;
+  padding-inline: .55em;
+}
+:is(.pill, .badge)[data-state]::before {
+  flex: 0 0 .62em;
+  width: .62em;
+  height: .62em;
+  background-color: var(--signal-mark);
+  border-radius: initial;
+  clip-path: var(--signal-shape);
+}
+:is(.pill, .badge):is([data-state=planned], [data-state=READY], [data-state=PENDING])::before {
+  outline: 1.25px var(--signal-mark) solid;
+  outline-offset: -1.25px;
+  background-color: #0000;
+  border-radius: 100vmax;
+  clip-path: none;
+}
+html:root body .dot[data-status] {
+  background-color: var(--signal-mark);
+}
+html:root body [data-dim] :is(.badge, .pill)[data-state] {
+  --signal-wash: var(--kc-muted-wash);
+  --signal-ink: var(--kc-muted-ink);
+  --signal-mark: var(--kc-muted-mark);
+}
+@media (forced-colors:active) {
+  :is(.pill, .badge)[data-state]::before { background-color: CanvasText; }
+}
+
 /* Avatars are neutral, as in the reference: a light grey tile with a hairline ring and the initial in the text ink.
    A seat's colour stays on small marks only (its bars, dots and lines), so a list of five seats is not five colours. */
 html:root body :is(.cp-graph-avatar .cp-graph-avatar-wash, .seat-icon > rect[data-seat-wash]) { fill: #f5f5f5 !important; stroke: rgba(0, 0, 0, .08); stroke-width: 1; }
@@ -31892,6 +31996,26 @@ cat > 'web/look-order.css' <<'OC_EOF_97'
 :root body [data-view][data-view=status] .view-stats{grid-template-columns:repeat(4, var(--track));}
 :root body [data-view][data-view=status] .status-card:hover{background:rgb(0 0 0 / .03);}
 :root body [data-view][data-view=status] .status-card{transition:0.14s ease background-color;}
+
+/* Keep the decision, its facts and its actions together at readable scale on a phone. */
+@media (max-width:960px) {
+  :is(#status-open, #status-ended, #status-selection) .status-card {
+    grid-template-columns:var(--track);
+    overflow-wrap:anywhere;
+  }
+  :is(#status-open, #status-ended, #status-selection) .status-card > * {
+    grid-area:auto;
+    min-inline-size:0;
+  }
+  :is(#status-open, #status-ended, #status-selection) .status-card > .actions {
+    grid-area:auto;
+    display:flex;
+    flex-wrap:wrap;
+    gap:var(--space-3);
+  }
+  html[data-route=status] [data-status-card] .actions a { align-content:center; min-block-size:2.75rem; }
+  html[data-route=status] #status-summary .view-stats { grid-template: auto / repeat(2,var(--track)); }
+}
 :root body [data-view][data-view=order] tbody tr:nth-child(even){background:#0000;}
 :root body [data-view][data-view=order] tbody tr:hover{background:rgb(0 0 0 / .03);}
 :root body [data-view][data-view=order] .file-actions button{white-space:nowrap;}
@@ -32495,21 +32619,10 @@ cat > 'web/look-team.css' <<'OC_EOF_99'
 :root body [data-view=team] :is(.seat-focus-controls, .feed-filters){gap:2px;}
 :root body [data-view=team] :is([data-select-seat], [data-seat-talk-filter], [data-canvas-item])[aria-pressed=true],
 :root body [data-view=team] :is([data-select-seat], [data-seat-talk-filter], [data-canvas-item])[aria-pressed=true]:hover{background:var(--wash); box-shadow:none; color:var(--team-ink); font-weight:normal;}
-:root body [data-view=team] .canvas-tablist{background:var(--wash); border-radius:10px; gap:2px; padding:var(--space-1);}
+:root body [data-view=team] .canvas-tablist{background:var(--canvas-ground); border-radius:10px; gap:2px; padding:var(--space-1);}
 :root body [data-view=team] .canvas-tablist button{border-radius:7px; min-height:28px;}
 :root body [data-view=team] .canvas-tablist [aria-selected=true],
 :root body [data-view=team] .canvas-tablist [aria-selected=true]:hover{background:var(--paper); box-shadow:var(--lift-1); color:var(--team-ink);}
-:root body [data-view=team] :is(.canvas-workarea, [data-canvas-rail], [data-canvas-panel], .canvas-tab-content, .replay-bar){background:var(--well);}
-:root body [data-view=team] [data-canvas-stage]{background-color:var(--well); border-radius:var(--space-2); box-shadow:inset 0 0 0 .5px var(--line);}
-:root body [data-view=team] [data-canvas-stage]:hover{box-shadow:inset 0 0 0 .5px var(--line-2);}
-:root body [data-view=team] [data-canvas-panel]{box-shadow:inset 0 .5px var(--line);}
-:root body [data-view=team] [data-canvas-item]{border-radius:var(--space-2); margin:0; min-height:40px;}
-:root body [data-view=team] button[data-canvas-node]{background:var(--paper); border:0; border-radius:var(--space-2); box-shadow:var(--lift-1); transition:0.14s ease box-shadow;}
-:root body [data-view=team] button[data-canvas-node]:hover{box-shadow:var(--lift-2);}
-:root body [data-view=team] button[data-canvas-node][aria-pressed=true],
-:root body [data-view=team] button[data-canvas-node][aria-pressed=true]:hover{background:linear-gradient(var(--wash), var(--wash)) var(--paper); box-shadow:var(--lift-1); outline:none;}
-:root body [data-view=team] button[data-canvas-node][aria-pressed=true]:focus-visible{outline:solid 1.5px var(--team-body); outline-offset:2px;}
-:root body [data-view=team] .canvas-tools{border-radius:var(--space-2); box-shadow:var(--lift-1); gap:2px;}
 :root body [data-view=team] :is(.canvas-event, .canvas-file){border:0; min-height:40px;}
 
 /* A state uses the same ink/wash pair in the tree, list, canvas and panel. */
@@ -32560,13 +32673,238 @@ cat > 'web/look-team.css' <<'OC_EOF_99'
 :root[data-motion=reduce] body [data-view=team] *,
 :root[data-motion=reduce] body [data-view=team] *::before,
 :root[data-motion=reduce] body [data-view=team] *::after{animation:none !important; transition:none !important;}
-/* Canvas, timeline and side list on white: grey fills only for the stage itself; the selected row is a pale blue wash. */
-:root body [data-view=team] :is(.canvas-workarea, .canvas-workarea > aside){background:var(--paper);}
-:root body [data-view=team] .canvas-workarea > aside{box-shadow:inset -0.5px 0 0 rgb(0 0 0 / .08);}
-:root body [data-view=team] [data-gantt-row]{background:var(--paper); box-shadow:inset 0 -0.5px 0 rgb(0 0 0 / .06);}
-:root body [data-view=team] [data-gantt-row][data-selected]{background:rgb(0 112 214 / .06);}
-:root body [data-view=team] .gantt-track{background:#0000;}
-:root body [data-view=team] [data-replay-range]{accent-color:#0070d6;}
+/* A cool plotting surface separates the white cards from the path network.
+   The blue rim always identifies the selection, while a short seat stripe
+   matches its lane below. Zoom only transforms the inner graph. */
+#team-canvas-slot {
+  --canvas-ground:#f1f4f9;
+  --canvas-line:#d9e1eb;
+  --canvas-subtle:#526278;
+  --canvas-current:var(--kc-run-ink);
+  --canvas-tint:var(--kc-run-wash);
+  --panel-edge:solid 1px var(--canvas-line);
+  --panel-rule:0 0 0 1px var(--canvas-line) inset;
+  --focus-rim:solid 2px var(--canvas-current);
+  --selected-paper:color-mix(in srgb, var(--canvas-tint) 28%, var(--paper));
+  --selected-lane:color-mix(in srgb, var(--canvas-tint) 59%, var(--paper));
+  --halo:color-mix(in srgb, var(--canvas-current) 18%, transparent);
+  --node-motion:140ms ease;
+}
+@media (min-width:761px) {
+  #team-canvas-slot { --map-height: 510px; }
+  #team-canvas-slot .canvas-card { grid-template-rows: auto var(--map-height) auto auto; }
+  #team-canvas-slot :is([data-canvas-rail], [data-canvas-stage]) { height: var(--map-height); }
+}
+#team-canvas-slot .canvas-workarea {
+  grid-template-columns:minmax(218px, 19%) var(--track);
+  column-gap:14px;
+}
+#team-canvas-slot .canvas-workarea > aside {
+  background:var(--paper);
+  border:var(--panel-edge);
+  padding:8px 8px 5px;
+  border-radius:13px;
+}
+#team-canvas-slot [data-canvas-search] {
+  background:#f7f9fc;
+  box-shadow:var(--panel-rule);
+}
+#team-canvas-slot [data-canvas-search]:focus-visible {
+  outline:var(--focus-rim);
+  outline-offset:-2px;
+}
+#team-canvas-slot [data-canvas-list] { padding: 0 2px; }
+#team-canvas-slot [data-canvas-list] .group-heading {
+  margin:10px 6px 5px;
+  font-size:var(--text-micro);
+  font-weight:var(--weight-heading);
+  letter-spacing:.02em;
+  color:var(--canvas-subtle);
+}
+#team-canvas-slot [data-canvas-list] .group-heading:first-child { margin-block-start: 0; }
+#team-canvas-slot button[data-canvas-item] {
+  padding:2px 7px;
+  border-radius:8px;
+  min-block-size:33px;
+}
+#team-canvas-slot button[data-canvas-item][aria-pressed=true] {
+  background:var(--canvas-tint);
+  box-shadow:inset 3px 0 var(--canvas-current);
+}
+#team-canvas-slot [data-canvas-item]:has([data-canvas-list-state]) {
+  grid-template-columns:24px var(--track);
+  gap:2px 8px;
+  padding:5px 7px;
+}
+#team-canvas-slot [data-canvas-item] > .work-icon { align-self: start; grid-row: span 2; }
+#team-canvas-slot [data-canvas-item] > .cut-text {
+  display:block;
+  white-space:normal;
+  overflow-wrap:anywhere;
+  max-block-size:calc(2 * var(--leading-xs));
+  line-height:var(--leading-xs);
+  color:var(--team-ink);
+  font-size:12.5px;
+  font-weight:550;
+}
+#team-canvas-slot [data-canvas-stage] {
+  background:radial-gradient(#cdd7e6 .8px, #0000 1px) 0 0 / 18px 18px var(--canvas-ground);
+  border-radius:13px;
+  box-shadow:var(--panel-rule);
+}
+#team-canvas-slot :is(.canvas-wires, .canvas-rings) { --edge: #96acc9; }
+#team-canvas-slot [data-linked] { --edge: var(--canvas-current); }
+#team-canvas-slot button[data-canvas-node] {
+  border:1px solid #c3cddd;
+  border-radius:11px;
+  background:var(--paper);
+  box-shadow:0 2px 3px #283a5920, 0 6px 13px -7px #253e6b33;
+  grid-template-rows:17px 15px 18px;
+  align-content:center;
+  padding-inline:9px 7px;
+  column-gap:7px;
+  transition:var(--node-motion) border-color, var(--node-motion) box-shadow;
+}
+#team-canvas-slot button[data-canvas-node] > strong {
+  font-weight:var(--weight-heading);
+  font-size:13px;
+  line-height:17px;
+}
+#team-canvas-slot button[data-canvas-node] > .hint {
+  font-size:var(--text-micro);
+  color:var(--canvas-subtle);
+  line-height:14px;
+}
+#team-canvas-slot button[data-canvas-node][data-kind=seat]::after {
+  content:"";
+  position:absolute;
+  inset-inline-start:0;
+  inset-block-start:12px;
+  inline-size:3px;
+  block-size:18px;
+  border-radius:0 2px 2px 0;
+  background:var(--seat-accent, var(--canvas-line));
+}
+#team-canvas-slot button[data-canvas-node][data-kind=order] {
+  grid-template-rows:16px 18px;
+  border-radius:8px;
+  column-gap:5px;
+  padding:2px 6px;
+}
+#team-canvas-slot button[data-canvas-node][data-kind=order] > strong {
+  font-size:var(--text-xs);
+  line-height:var(--leading-xs);
+}
+#team-canvas-slot [data-canvas-node][data-replay=future] { border-style: dashed; }
+#team-canvas-slot [data-canvas-node][data-search-dim] { opacity: .54; }
+#team-canvas-slot button[data-canvas-node]:hover { border-color: #809abc; }
+#team-canvas-slot button[data-canvas-node][aria-pressed=true] {
+  border-color:var(--canvas-current);
+  background:var(--selected-paper);
+  box-shadow:0 0 0 2px var(--halo),
+              0 6px 14px -5px #304f7a44;
+}
+#team-canvas-slot button[data-canvas-node]:focus-visible {
+  outline:var(--focus-rim);
+  outline-offset:3px;
+}
+#team-canvas-slot .canvas-tools {
+  border:var(--panel-edge);
+  border-radius:11px;
+  box-shadow:0 3px 8px -3px #203b6030;
+}
+#team-canvas-slot .work-icon > rect { fill: var(--canvas-ground); }
+#team-canvas-slot .replay-bar {
+  background:#f6f8fb;
+  box-shadow:var(--panel-rule);
+}
+#team-canvas-slot [data-replay-range] { accent-color: var(--canvas-current); }
+#team-canvas-slot [data-canvas-panel] {
+  border-radius:12px;
+  border:var(--panel-edge);
+  padding:0;
+  background:var(--paper);
+}
+#team-canvas-slot .canvas-panel-head {
+  gap:8px;
+  padding:6px 8px;
+  min-inline-size:0;
+  flex-wrap:wrap;
+}
+#team-canvas-slot .timeline-legend { gap: 5px; flex-wrap: wrap; max-inline-size: 100%; }
+#team-canvas-slot .canvas-panel-head > strong { color:var(--canvas-subtle); font-size:var(--text-xs); }
+#team-canvas-slot [data-canvas-content=timeline] {
+  --track-inset:12px;
+  --name-column:clamp(114px, 14vw, 140px);
+  --track-gap:8px;
+  --ruler-offset:calc(var(--name-column) + var(--track-gap));
+  padding:6px var(--track-inset) 8px;
+  background:#f7f9fc;
+  border-radius:0 0 11px 11px;
+}
+#team-canvas-slot .gantt-ruler {
+  margin-inline-start:var(--ruler-offset);
+  font-variant-numeric:var(--number-style);
+  font-size:11px;
+  line-height:var(--leading-sm);
+  color:var(--canvas-subtle);
+}
+#team-canvas-slot [data-gantt-row] {
+  background:var(--paper);
+  grid-template-columns:var(--name-column) var(--track);
+  gap:var(--track-gap);
+  border-radius:0;
+  box-shadow:inset 0 -1px #e9edf3;
+}
+#team-canvas-slot [data-gantt-row][data-selected] {
+  background:var(--selected-lane);
+  box-shadow:inset 3px 0 var(--canvas-current), inset 0 -1px var(--canvas-line);
+}
+#team-canvas-slot [data-gantt-label] {
+  justify-self:stretch;
+  margin-inline-start:7px;
+  max-inline-size:calc(100% - 7px);
+  overflow:hidden;
+}
+#team-canvas-slot [data-gantt-label] .cut-text { flex:auto; }
+#team-canvas-slot .gantt-track {
+  background:linear-gradient(90deg, #dce3ee 1px, #0000 1px) 0 / calc(100% / 3) 100%;
+}
+#team-canvas-slot [data-gantt-bar] {
+  block-size:var(--space-3);
+  border-radius:4px;
+  background:var(--seat-accent, var(--canvas-subtle));
+  --bar-edge:color-mix(in srgb, var(--seat-ink) 35%, transparent);
+  box-shadow:0 0 0 1px var(--bar-edge) inset;
+}
+#team-canvas-slot [data-gantt-bar]::after {
+  inline-size:4px;
+  border-radius:0 3px 3px 0;
+  box-shadow:-1px 0 var(--paper);
+}
+#team-canvas-slot [data-gantt-bar][data-tone=done]::after { background: var(--kc-ok-mark); }
+#team-canvas-slot [data-gantt-bar][data-tone=failed]::after { background: var(--kc-bad-mark); }
+#team-canvas-slot [data-gantt-bar][data-tone=running]::after { background: var(--kc-run-mark); }
+#team-canvas-slot .gantt-duration {
+  background:none;
+  color:var(--canvas-subtle);
+  font-size:var(--text-micro);
+  font-variant-numeric:var(--number-style);
+  top:23px;
+  line-height:var(--leading-xs);
+}
+#team-canvas-slot .gantt-cursor {
+  top:26px;
+  left:calc(var(--track-inset) + var(--ruler-offset) + (100% - 2 * var(--track-inset) - var(--ruler-offset)) * var(--cursor-fraction));
+  background:var(--canvas-current);
+}
+@media (forced-colors:active) {
+  #team-canvas-slot [data-canvas-node][aria-pressed=true],
+  #team-canvas-slot [data-canvas-item][aria-pressed=true] { outline: 2px solid Highlight; }
+  #team-canvas-slot :is(.canvas-wires, .canvas-rings) { --edge: CanvasText; }
+  #team-canvas-slot [data-linked] { --edge: Highlight; }
+  #team-canvas-slot [data-gantt-bar] { background: CanvasText; }
+}
 
 /* Keep the stack projection separate from each layer's selected position. */
 :root body [data-view=team] .level-steps{overflow:visible;}
@@ -32618,6 +32956,7 @@ html[data-motion=on] [data-view=team] .level-slab{transition:translate 560ms cub
   }
   html[data-route=team] body :is(.canvas-stats,.canvas-tablist) { justify-content:start; }
   html[data-route=team] body [data-canvas-rail] { height:12rem; }
+  #team-canvas-slot .canvas-workarea { grid-template-columns:minmax(0,1fr); }
   html[data-route=team] body [data-canvas-stage] { height:clamp(18rem,48svh,28rem); }
   html[data-route=team] body .replay-bar {
     grid-template-columns:auto var(--team-column) auto;
@@ -32642,7 +32981,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
  "criteria_sha256": "44159b4742b475ce35c3c9ed8dc29df84f33592cf52da9556bde4a5137704c6c",
  "instruments_sha256": "849c6dcfac1405f55e87137179065f43c804b5cd63d86a8cdf5118cbcb0de311",
  "fixture": "release-review-v1",
- "measured_at": "2026-11-24T13:37:12+00:00",
+ "measured_at": "2026-11-24T14:10:50+00:00",
  "versions": [
   {
    "id": "paid",
@@ -32656,9 +32995,9 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "id": "gpt",
    "name": "GPT-6.2",
    "color": "#005ea8",
-   "revision": "Runtime aad33babe457",
-   "runtime_sha256": "aad33babe4579d85fee15ba897ff69b2626b0b74e67f3c048499ee66f3852fd9",
-   "captured": "2026-11-24T13:37:12+00:00"
+   "revision": "Runtime 060acf4fcee7",
+   "runtime_sha256": "060acf4fcee7d4988db39d60e8b7ed3bd47a91724e203f04b865229e799d7fae",
+   "captured": "2026-11-24T14:10:50+00:00"
   },
   {
    "id": "mine",
@@ -32780,7 +33119,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "total": 8,
      "measured": 8,
      "passed": 1,
-     "score": 0.7234714590964592
+     "score": 0.7243047924297924
     },
     "mine": {
      "total": 8,
@@ -32851,8 +33190,8 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
     "gpt": {
      "total": 8,
      "measured": 8,
-     "passed": 6,
-     "score": 0.875
+     "passed": 7,
+     "score": 0.9375
     },
     "mine": {
      "total": 8,
@@ -32876,7 +33215,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "total": 8,
      "measured": 8,
      "passed": 6,
-     "score": 0.9328569077801382
+     "score": 0.9320916552042704
     },
     "mine": {
      "total": 8,
@@ -34181,7 +34520,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "passed": true,
      "score": 1,
      "evidence": {
-      "revision": "ad059b4b6fdfadc529b7667f71ac57107aae8d31",
+      "revision": "0af8cbd09a23cbc8a6e66828dec8e562a72ad90a",
       "scanner": "privacy_scan",
       "scope": "reachable history"
      }
@@ -35100,11 +35439,11 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 0.020999999999999998,
+     "value": 0.019999999999999997,
      "passed": false,
-     "score": 0.8600000000000001,
+     "score": 0.8666666666666667,
      "evidence": {
-      "observed": 0.038,
+      "observed": 0.039,
       "reference": 0.059,
       "viewport": [
        1440,
@@ -36126,16 +36465,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 1,
-     "passed": false,
-     "score": 0.5,
+     "value": 2,
+     "passed": true,
+     "score": 1,
      "evidence": {
       "fits": true,
-      "natural": false,
-      "viewport": 1280,
-      "width": 1280,
-      "device": false,
-      "scale": 0.3046875
+      "natural": true,
+      "viewport": 390,
+      "width": 390,
+      "device": true,
+      "scale": 1
      }
     },
     "mine": {
@@ -36329,16 +36668,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 48.5,
+     "value": 49.09999990463257,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       48.19999980926514,
-       63.69999980926514,
-       75.0,
-       46.80000019073486,
-       48.5
+       49.09999990463257,
+       51.09999990463257,
+       48.0,
+       49.09999990463257,
+       45.200000286102295
       ],
       "aggregate": "median",
       "cold": true
@@ -36394,9 +36733,9 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "score": 1,
      "evidence": {
       "samples": [
-       28.0,
-       40.0,
        24.0,
+       28.0,
+       28.0,
        28.0,
        28.0
       ],
@@ -36449,16 +36788,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 869.775390625,
+     "value": 880.978515625,
      "passed": false,
-     "score": 0.6574914114815849,
+     "score": 0.6512396676199776,
      "evidence": {
       "samples": [
-       869.775390625,
-       869.775390625,
-       869.775390625,
-       869.775390625,
-       869.775390625
+       880.978515625,
+       880.978515625,
+       880.978515625,
+       880.978515625,
+       880.978515625
       ],
       "aggregate": "median",
       "cold": true
@@ -36562,16 +36901,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "reason": "No rendered link to a supported order detail API"
     },
     "gpt": {
-     "value": 65.59999990463257,
+     "value": 67.40000009536743,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       70.90000009536743,
-       64.40000009536743,
-       78.5,
-       65.59999990463257,
-       62.09999990463257
+       71.90000009536743,
+       66.80000019073486,
+       83,
+       67.40000009536743,
+       65.5
       ],
       "aggregate": "median"
      }
@@ -36613,16 +36952,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "reason": "No rendered link to a supported order detail API"
     },
     "gpt": {
-     "value": 78.5,
+     "value": 83,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       70.90000009536743,
-       64.40000009536743,
-       78.5,
-       65.59999990463257,
-       62.09999990463257
+       71.90000009536743,
+       66.80000019073486,
+       83,
+       67.40000009536743,
+       65.5
       ],
       "aggregate": "maximum"
      }
@@ -36666,12 +37005,12 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 31.356337908857554,
+     "value": 31.340771118297756,
      "passed": false,
-     "score": 0.8053638507595203,
+     "score": 0.8054935740141854,
      "evidence": {
-      "seconds": 12.001099999904632,
-      "bytes": 385342,
+      "seconds": 12.002200000286102,
+      "bytes": 385186,
       "requests": 13,
       "repeat": true
      }
@@ -36711,12 +37050,12 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 1.0832340368885607,
+     "value": 1.0831347586017657,
      "passed": true,
      "score": 1,
      "evidence": {
-      "seconds": 12.001099999904632,
-      "bytes": 385342,
+      "seconds": 12.002200000286102,
+      "bytes": 385186,
       "requests": 13,
       "repeat": true
      }
@@ -39301,13 +39640,13 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
  "evolution": {
   "slot": "gpt",
   "improved": [
-   "mobile.team",
-   "records.phone"
+   "visual.tone",
+   "mobile.status"
   ],
   "regressed": [],
   "passed": true,
-  "previous_revision": "Runtime 5cb2504c4dfd",
-  "previous_report_sha256": "db814c08482095f57c2bb41d6f381b13841a3e3b3c4b4eca26c473fdcf48b7f6",
+  "previous_revision": "Runtime aad33babe457",
+  "previous_report_sha256": "112f847bfae85eb59f825775f78c1ac7c6a64fb1b9f3b7c9eb25d999dd9dc563",
   "previous_values": {
    "correct.tests": 1.0,
    "correct.invariants": 13,
@@ -39367,20 +39706,20 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "action.group": 1,
    "mobile.home": 2,
    "mobile.board": 2,
-   "mobile.team": 1,
+   "mobile.team": 2,
    "mobile.calendar": 1,
    "mobile.status": 1,
    "mobile.files": 2,
    "mobile.ledger": 2,
    "mobile.swarms": 2,
-   "speed.home": 52.60000038146973,
-   "speed.paint": 32.0,
-   "speed.bytes": 841.2099609375,
+   "speed.home": 48.5,
+   "speed.paint": 28.0,
+   "speed.bytes": 869.775390625,
    "speed.requests": 17.0,
-   "speed.order": 61.5,
-   "speed.tail": 77.39999961853027,
-   "speed.pollbytes": 31.36696586943153,
-   "speed.pollrate": 1.0830896381389292,
+   "speed.order": 65.59999990463257,
+   "speed.tail": 78.5,
+   "speed.pollbytes": 31.356337908857554,
+   "speed.pollrate": 1.0832340368885607,
    "robust.offline": 1,
    "robust.stale": 1,
    "robust.overlap": 1,
@@ -39397,7 +39736,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "records.onb": 1.0,
    "records.tree": 1.0,
    "records.audit": 1.0,
-   "records.phone": 0.75,
+   "records.phone": 1.0,
    "verify.mutants": 1.0,
    "verify.ledger": 1.0,
    "verify.numbers": 1,
@@ -39407,7 +39746,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "verify.hash": 1,
    "verify.raw": 1
   },
-  "previous_runtime_sha256": "5cb2504c4dfd5788fb928101caffb7bd8bab78d8c64317fe57a707ed87045898",
+  "previous_runtime_sha256": "aad33babe4579d85fee15ba897ff69b2626b0b74e67f3c048499ee66f3852fd9",
   "motion": {
    "instrument": {
     "capture": "42ecf3865b6ae96368e3a7761c34104daa7d9145ff818be5459532d2c8c99f8f",
@@ -40162,810 +40501,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     }
    },
-   "parent": "db814c08482095f57c2bb41d6f381b13841a3e3b3c4b4eca26c473fdcf48b7f6",
    "before": {
-    "normal": {
-     "background": {
-      "pixels": 50669,
-      "steps": [
-       [
-        153,
-        14155
-       ],
-       [
-        282,
-        20067
-       ],
-       [
-        405,
-        15960
-       ],
-       [
-        532,
-        19668
-       ],
-       [
-        653,
-        18582
-       ],
-       [
-        783,
-        25629
-       ],
-       [
-        903,
-        32911
-       ],
-       [
-        1034,
-        40101
-       ],
-       [
-        1150,
-        37113
-       ],
-       [
-        1275,
-        35664
-       ],
-       [
-        1399,
-        31213
-       ],
-       [
-        1525,
-        27826
-       ],
-       [
-        1649,
-        19957
-       ],
-       [
-        1776,
-        13111
-       ],
-       [
-        1900,
-        29085
-       ],
-       [
-        2024,
-        37436
-       ],
-       [
-        2150,
-        39624
-       ],
-       [
-        2273,
-        40322
-       ],
-       [
-        2400,
-        41319
-       ],
-       [
-        2523,
-        42095
-       ],
-       [
-        2649,
-        42380
-       ],
-       [
-        2776,
-        33835
-       ],
-       [
-        2900,
-        13781
-       ],
-       [
-        3025,
-        2184
-       ],
-       [
-        3151,
-        368
-       ],
-       [
-        3275,
-        757
-       ],
-       [
-        3400,
-        10567
-       ],
-       [
-        3525,
-        32264
-       ],
-       [
-        3650,
-        41838
-       ],
-       [
-        3775,
-        41854
-       ],
-       [
-        3901,
-        40970
-       ],
-       [
-        4025,
-        40701
-       ],
-       [
-        4150,
-        37666
-       ],
-       [
-        4274,
-        30364
-       ],
-       [
-        4400,
-        13290
-       ],
-       [
-        4524,
-        1
-       ],
-       [
-        4650,
-        6987
-       ],
-       [
-        4776,
-        24158
-       ],
-       [
-        4900,
-        34330
-       ],
-       [
-        5024,
-        39313
-       ],
-       [
-        5150,
-        41106
-       ],
-       [
-        5275,
-        40995
-       ],
-       [
-        5400,
-        40684
-       ],
-       [
-        5524,
-        33419
-       ],
-       [
-        5651,
-        18448
-       ],
-       [
-        5774,
-        11171
-       ],
-       [
-        5901,
-        5445
-       ],
-       [
-        6026,
-        6305
-       ],
-       [
-        6149,
-        13363
-       ],
-       [
-        6275,
-        27719
-       ],
-       [
-        6404,
-        39834
-       ],
-       [
-        6532,
-        42700
-       ],
-       [
-        6652,
-        40871
-       ],
-       [
-        6782,
-        41265
-       ],
-       [
-        6903,
-        39574
-       ],
-       [
-        7034,
-        41480
-       ],
-       [
-        7154,
-        35916
-       ],
-       [
-        7278,
-        31842
-       ],
-       [
-        7404,
-        27695
-       ],
-       [
-        7529,
-        27452
-       ],
-       [
-        7658,
-        29055
-       ],
-       [
-        7778,
-        27630
-       ],
-       [
-        7905,
-        32787
-       ],
-       [
-        8025,
-        30511
-       ],
-       [
-        8151,
-        29355
-       ],
-       [
-        8275,
-        22090
-       ],
-       [
-        8400,
-        21716
-       ],
-       [
-        8524,
-        22690
-       ]
-      ]
-     },
-     "title": {
-      "pixels": 628,
-      "steps": [
-       [
-        153,
-        323
-       ],
-       [
-        282,
-        478
-       ],
-       [
-        405,
-        529
-       ],
-       [
-        532,
-        459
-       ],
-       [
-        653,
-        481
-       ],
-       [
-        783,
-        503
-       ],
-       [
-        903,
-        515
-       ],
-       [
-        1034,
-        528
-       ],
-       [
-        1150,
-        555
-       ],
-       [
-        1275,
-        579
-       ],
-       [
-        1399,
-        588
-       ],
-       [
-        1525,
-        595
-       ],
-       [
-        1649,
-        586
-       ],
-       [
-        1776,
-        585
-       ],
-       [
-        1900,
-        614
-       ],
-       [
-        2024,
-        607
-       ],
-       [
-        2150,
-        611
-       ],
-       [
-        2273,
-        626
-       ],
-       [
-        2400,
-        616
-       ],
-       [
-        2523,
-        616
-       ],
-       [
-        2649,
-        560
-       ],
-       [
-        2776,
-        597
-       ],
-       [
-        2900,
-        613
-       ],
-       [
-        3025,
-        595
-       ],
-       [
-        3151,
-        605
-       ],
-       [
-        3275,
-        595
-       ],
-       [
-        3400,
-        587
-       ],
-       [
-        3525,
-        480
-       ],
-       [
-        3650,
-        445
-       ],
-       [
-        3775,
-        376
-       ],
-       [
-        3901,
-        181
-       ],
-       [
-        4025,
-        0
-       ],
-       [
-        4150,
-        0
-       ],
-       [
-        4274,
-        192
-       ],
-       [
-        4400,
-        372
-       ],
-       [
-        4524,
-        443
-       ],
-       [
-        4650,
-        481
-       ],
-       [
-        4776,
-        587
-       ],
-       [
-        4900,
-        593
-       ],
-       [
-        5024,
-        602
-       ],
-       [
-        5150,
-        592
-       ],
-       [
-        5275,
-        613
-       ],
-       [
-        5400,
-        597
-       ],
-       [
-        5524,
-        561
-       ],
-       [
-        5651,
-        616
-       ],
-       [
-        5774,
-        616
-       ],
-       [
-        5901,
-        626
-       ],
-       [
-        6026,
-        611
-       ],
-       [
-        6149,
-        606
-       ],
-       [
-        6275,
-        614
-       ],
-       [
-        6404,
-        585
-       ],
-       [
-        6532,
-        586
-       ],
-       [
-        6652,
-        594
-       ],
-       [
-        6782,
-        587
-       ],
-       [
-        6903,
-        580
-       ],
-       [
-        7034,
-        552
-       ],
-       [
-        7154,
-        530
-       ],
-       [
-        7278,
-        506
-       ],
-       [
-        7404,
-        451
-       ],
-       [
-        7529,
-        352
-       ],
-       [
-        7658,
-        198
-       ],
-       [
-        7778,
-        53
-       ],
-       [
-        7905,
-        30
-       ],
-       [
-        8025,
-        0
-       ],
-       [
-        8151,
-        1
-       ],
-       [
-        8275,
-        31
-       ],
-       [
-        8400,
-        52
-       ],
-       [
-        8524,
-        168
-       ]
-      ]
-     }
-    },
-    "reduce": {
-     "background": {
-      "pixels": 51043,
-      "steps": [
-       [
-        147,
-        0
-       ],
-       [
-        266,
-        0
-       ],
-       [
-        391,
-        0
-       ],
-       [
-        522,
-        0
-       ],
-       [
-        642,
-        0
-       ],
-       [
-        766,
-        0
-       ],
-       [
-        891,
-        0
-       ],
-       [
-        1022,
-        0
-       ],
-       [
-        1146,
-        0
-       ],
-       [
-        1266,
-        0
-       ],
-       [
-        1392,
-        0
-       ],
-       [
-        1517,
-        0
-       ],
-       [
-        1642,
-        0
-       ],
-       [
-        1772,
-        0
-       ],
-       [
-        1897,
-        0
-       ],
-       [
-        2033,
-        0
-       ],
-       [
-        2152,
-        0
-       ],
-       [
-        2285,
-        0
-       ],
-       [
-        2397,
-        0
-       ],
-       [
-        2522,
-        0
-       ],
-       [
-        2643,
-        0
-       ],
-       [
-        2776,
-        0
-       ],
-       [
-        2898,
-        0
-       ],
-       [
-        3017,
-        0
-       ],
-       [
-        3143,
-        0
-       ],
-       [
-        3272,
-        0
-       ],
-       [
-        3397,
-        0
-       ]
-      ]
-     },
-     "title": {
-      "pixels": 627,
-      "steps": [
-       [
-        147,
-        0
-       ],
-       [
-        266,
-        0
-       ],
-       [
-        391,
-        0
-       ],
-       [
-        522,
-        0
-       ],
-       [
-        642,
-        0
-       ],
-       [
-        766,
-        0
-       ],
-       [
-        891,
-        0
-       ],
-       [
-        1022,
-        0
-       ],
-       [
-        1146,
-        0
-       ],
-       [
-        1266,
-        0
-       ],
-       [
-        1392,
-        0
-       ],
-       [
-        1517,
-        0
-       ],
-       [
-        1642,
-        0
-       ],
-       [
-        1772,
-        0
-       ],
-       [
-        1897,
-        0
-       ],
-       [
-        2033,
-        0
-       ],
-       [
-        2152,
-        0
-       ],
-       [
-        2285,
-        0
-       ],
-       [
-        2397,
-        0
-       ],
-       [
-        2522,
-        0
-       ],
-       [
-        2643,
-        0
-       ],
-       [
-        2776,
-        0
-       ],
-       [
-        2898,
-        0
-       ],
-       [
-        3017,
-        0
-       ],
-       [
-        3143,
-        0
-       ],
-       [
-        3272,
-        0
-       ],
-       [
-        3397,
-        0
-       ]
-      ]
-     }
-    },
-    "assets": {
-     "app.css": "5d442c22213b545048fc260254cafc7eee73e3a67f8234ea0e861ab427f86209",
-     "look-home.css": "2a1671cb7b216b0ab10471a15ea2f410a711486c020bcd96aa6ab4f4dce08975",
-     "look-calendar.css": "ce849c90bc8ec101c150eb0d16ae0385e003841c1d05aab61680bca6c988c46c",
-     "look-order.css": "08335cf3398d9f78ec7d813a25e3fee1556fdbb80d30560dfdd93e4cffb33b2f",
-     "look-team.css": "e0fe3cd4ea4d8fe1c3c8f1ea24aa92a2bdae9f2558c35b43fe0b357141e819ab",
-     "look-records.css": "e5396fa4fbd3645f0bd28ab175c3abc99c334436c0a2a881165ebf452ccd167e",
-     "colour.css": "d7bbde2a94e695b8064c01e2342aa69bdfec1f8dba604544306d92518e05dc85",
-     "swarm.css": "12ee29f0d12215967f7344727b0d8af6fd3af24f4f87ce8e321035b0074c7bad",
-     "icons.js": "af958d0b8fd32168a1d2db3a4450927cf3d20c1fd2eb4d0dc559f4d64820fc1b",
-     "status.js": "ea2b20db35b62d8b21432a95f54fe2b4ce0b8372969d8e6763b515c695a5ee5d",
-     "board.js": "e9f6c686b67852bb6838dbfcaf06a64385cf6ed44f2d03f10d67b6b93cf509ed",
-     "swarm.js": "d4cb9c903f61abd152e9990f31d46dc93779e6f2eb2b2fe200aa9b11754a7538",
-     "app.js": "e24f7be1f139f3bdefc7174160883bad689761c1deadb738e0091193c9e4d23d"
-    },
-    "runtime": "5cb2504c4dfd5788fb928101caffb7bd8bab78d8c64317fe57a707ed87045898"
-   },
-   "after": {
     "normal": {
      "background": {
       "pixels": 50669,
@@ -41766,7 +41302,810 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "app.js": "4b41f9296e593347d542510199dbe9b8170d933e6a6b3d6fe140de578bcc6be4"
     },
     "runtime": "aad33babe4579d85fee15ba897ff69b2626b0b74e67f3c048499ee66f3852fd9"
-   }
+   },
+   "after": {
+    "normal": {
+     "background": {
+      "pixels": 51927,
+      "steps": [
+       [
+        147,
+        11297
+       ],
+       [
+        272,
+        17910
+       ],
+       [
+        397,
+        17550
+       ],
+       [
+        523,
+        19442
+       ],
+       [
+        647,
+        20775
+       ],
+       [
+        773,
+        24947
+       ],
+       [
+        898,
+        35853
+       ],
+       [
+        1023,
+        39710
+       ],
+       [
+        1147,
+        38548
+       ],
+       [
+        1272,
+        35438
+       ],
+       [
+        1397,
+        31385
+       ],
+       [
+        1522,
+        27440
+       ],
+       [
+        1647,
+        19253
+       ],
+       [
+        1772,
+        14613
+       ],
+       [
+        1896,
+        30885
+       ],
+       [
+        2022,
+        38002
+       ],
+       [
+        2147,
+        40169
+       ],
+       [
+        2272,
+        41627
+       ],
+       [
+        2397,
+        42653
+       ],
+       [
+        2522,
+        43588
+       ],
+       [
+        2647,
+        43430
+       ],
+       [
+        2772,
+        33507
+       ],
+       [
+        2897,
+        12111
+       ],
+       [
+        3022,
+        1840
+       ],
+       [
+        3146,
+        321
+       ],
+       [
+        3272,
+        1007
+       ],
+       [
+        3397,
+        13110
+       ],
+       [
+        3521,
+        34666
+       ],
+       [
+        3647,
+        43381
+       ],
+       [
+        3772,
+        42893
+       ],
+       [
+        3897,
+        42382
+       ],
+       [
+        4022,
+        41426
+       ],
+       [
+        4147,
+        37183
+       ],
+       [
+        4272,
+        29988
+       ],
+       [
+        4397,
+        10707
+       ],
+       [
+        4522,
+        0
+       ],
+       [
+        4647,
+        7582
+       ],
+       [
+        4772,
+        24466
+       ],
+       [
+        4897,
+        35197
+       ],
+       [
+        5023,
+        39941
+       ],
+       [
+        5147,
+        41978
+       ],
+       [
+        5272,
+        42190
+       ],
+       [
+        5397,
+        41891
+       ],
+       [
+        5522,
+        33298
+       ],
+       [
+        5647,
+        18927
+       ],
+       [
+        5771,
+        10690
+       ],
+       [
+        5897,
+        5509
+       ],
+       [
+        6022,
+        6420
+       ],
+       [
+        6147,
+        14698
+       ],
+       [
+        6272,
+        29977
+       ],
+       [
+        6397,
+        41570
+       ],
+       [
+        6522,
+        43430
+       ],
+       [
+        6647,
+        42751
+       ],
+       [
+        6772,
+        41829
+       ],
+       [
+        6896,
+        41165
+       ],
+       [
+        7022,
+        40671
+       ],
+       [
+        7147,
+        37774
+       ],
+       [
+        7272,
+        32644
+       ],
+       [
+        7397,
+        28388
+       ],
+       [
+        7525,
+        28576
+       ],
+       [
+        7647,
+        28377
+       ],
+       [
+        7772,
+        29222
+       ],
+       [
+        7897,
+        30992
+       ],
+       [
+        8022,
+        32694
+       ],
+       [
+        8147,
+        29274
+       ],
+       [
+        8272,
+        22795
+       ],
+       [
+        8396,
+        22264
+       ],
+       [
+        8522,
+        24007
+       ]
+      ]
+     },
+     "title": {
+      "pixels": 628,
+      "steps": [
+       [
+        147,
+        340
+       ],
+       [
+        272,
+        493
+       ],
+       [
+        397,
+        522
+       ],
+       [
+        523,
+        515
+       ],
+       [
+        647,
+        452
+       ],
+       [
+        773,
+        513
+       ],
+       [
+        898,
+        510
+       ],
+       [
+        1023,
+        539
+       ],
+       [
+        1147,
+        553
+       ],
+       [
+        1272,
+        572
+       ],
+       [
+        1397,
+        583
+       ],
+       [
+        1522,
+        599
+       ],
+       [
+        1647,
+        582
+       ],
+       [
+        1772,
+        589
+       ],
+       [
+        1896,
+        612
+       ],
+       [
+        2022,
+        609
+       ],
+       [
+        2147,
+        612
+       ],
+       [
+        2272,
+        621
+       ],
+       [
+        2397,
+        611
+       ],
+       [
+        2522,
+        616
+       ],
+       [
+        2647,
+        567
+       ],
+       [
+        2772,
+        598
+       ],
+       [
+        2897,
+        608
+       ],
+       [
+        3022,
+        595
+       ],
+       [
+        3146,
+        608
+       ],
+       [
+        3272,
+        595
+       ],
+       [
+        3397,
+        577
+       ],
+       [
+        3521,
+        484
+       ],
+       [
+        3647,
+        435
+       ],
+       [
+        3772,
+        378
+       ],
+       [
+        3897,
+        146
+       ],
+       [
+        4022,
+        0
+       ],
+       [
+        4147,
+        1
+       ],
+       [
+        4272,
+        215
+       ],
+       [
+        4397,
+        387
+       ],
+       [
+        4522,
+        455
+       ],
+       [
+        4647,
+        490
+       ],
+       [
+        4772,
+        592
+       ],
+       [
+        4897,
+        594
+       ],
+       [
+        5023,
+        603
+       ],
+       [
+        5147,
+        595
+       ],
+       [
+        5272,
+        613
+       ],
+       [
+        5397,
+        594
+       ],
+       [
+        5522,
+        569
+       ],
+       [
+        5647,
+        617
+       ],
+       [
+        5771,
+        617
+       ],
+       [
+        5897,
+        627
+       ],
+       [
+        6022,
+        612
+       ],
+       [
+        6147,
+        603
+       ],
+       [
+        6272,
+        615
+       ],
+       [
+        6397,
+        586
+       ],
+       [
+        6522,
+        587
+       ],
+       [
+        6647,
+        589
+       ],
+       [
+        6772,
+        588
+       ],
+       [
+        6896,
+        581
+       ],
+       [
+        7022,
+        553
+       ],
+       [
+        7147,
+        529
+       ],
+       [
+        7272,
+        502
+       ],
+       [
+        7397,
+        450
+       ],
+       [
+        7525,
+        351
+       ],
+       [
+        7647,
+        101
+       ],
+       [
+        7772,
+        54
+       ],
+       [
+        7897,
+        23
+       ],
+       [
+        8022,
+        0
+       ],
+       [
+        8147,
+        1
+       ],
+       [
+        8272,
+        34
+       ],
+       [
+        8396,
+        54
+       ],
+       [
+        8522,
+        160
+       ]
+      ]
+     }
+    },
+    "reduce": {
+     "background": {
+      "pixels": 52301,
+      "steps": [
+       [
+        141,
+        0
+       ],
+       [
+        267,
+        0
+       ],
+       [
+        391,
+        0
+       ],
+       [
+        517,
+        0
+       ],
+       [
+        641,
+        0
+       ],
+       [
+        767,
+        0
+       ],
+       [
+        892,
+        0
+       ],
+       [
+        1017,
+        0
+       ],
+       [
+        1142,
+        0
+       ],
+       [
+        1267,
+        0
+       ],
+       [
+        1392,
+        0
+       ],
+       [
+        1517,
+        0
+       ],
+       [
+        1642,
+        0
+       ],
+       [
+        1766,
+        0
+       ],
+       [
+        1891,
+        0
+       ],
+       [
+        2017,
+        0
+       ],
+       [
+        2142,
+        0
+       ],
+       [
+        2266,
+        0
+       ],
+       [
+        2391,
+        0
+       ],
+       [
+        2516,
+        0
+       ],
+       [
+        2642,
+        0
+       ],
+       [
+        2766,
+        0
+       ],
+       [
+        2892,
+        0
+       ],
+       [
+        3016,
+        0
+       ],
+       [
+        3141,
+        0
+       ],
+       [
+        3267,
+        0
+       ],
+       [
+        3391,
+        0
+       ]
+      ]
+     },
+     "title": {
+      "pixels": 627,
+      "steps": [
+       [
+        141,
+        0
+       ],
+       [
+        267,
+        0
+       ],
+       [
+        391,
+        0
+       ],
+       [
+        517,
+        0
+       ],
+       [
+        641,
+        0
+       ],
+       [
+        767,
+        0
+       ],
+       [
+        892,
+        0
+       ],
+       [
+        1017,
+        0
+       ],
+       [
+        1142,
+        0
+       ],
+       [
+        1267,
+        0
+       ],
+       [
+        1392,
+        0
+       ],
+       [
+        1517,
+        0
+       ],
+       [
+        1642,
+        0
+       ],
+       [
+        1766,
+        0
+       ],
+       [
+        1891,
+        0
+       ],
+       [
+        2017,
+        0
+       ],
+       [
+        2142,
+        0
+       ],
+       [
+        2266,
+        0
+       ],
+       [
+        2391,
+        0
+       ],
+       [
+        2516,
+        0
+       ],
+       [
+        2642,
+        0
+       ],
+       [
+        2766,
+        0
+       ],
+       [
+        2892,
+        0
+       ],
+       [
+        3016,
+        0
+       ],
+       [
+        3141,
+        0
+       ],
+       [
+        3267,
+        0
+       ],
+       [
+        3391,
+        0
+       ]
+      ]
+     }
+    },
+    "assets": {
+     "app.css": "5d442c22213b545048fc260254cafc7eee73e3a67f8234ea0e861ab427f86209",
+     "look-home.css": "3742dfbb8815ceb9a79f25cdf8a2479dad0401c53f787523f0830ef37319cee0",
+     "look-calendar.css": "ce849c90bc8ec101c150eb0d16ae0385e003841c1d05aab61680bca6c988c46c",
+     "look-order.css": "d918c34c41ebc02d3c216635019fca3c831fa57ecdc9107c6876572e5ea910c4",
+     "look-team.css": "a73c27f02e5b3bad9a6de7b125fe1fbaf48aec0c6b609be56b96081bfdef0e05",
+     "look-records.css": "9c82bf8e43b118faa7a34e4d6c260d09b0aacb9605503375759248bcdbc93c7e",
+     "colour.css": "39ad6e268574724a5d5ab5a2ae26aa55a14d247cc78cc0f856f7f6f0d4d0ef5a",
+     "swarm.css": "12ee29f0d12215967f7344727b0d8af6fd3af24f4f87ce8e321035b0074c7bad",
+     "icons.js": "af958d0b8fd32168a1d2db3a4450927cf3d20c1fd2eb4d0dc559f4d64820fc1b",
+     "status.js": "ea2b20db35b62d8b21432a95f54fe2b4ce0b8372969d8e6763b515c695a5ee5d",
+     "board.js": "e9f6c686b67852bb6838dbfcaf06a64385cf6ed44f2d03f10d67b6b93cf509ed",
+     "swarm.js": "d4cb9c903f61abd152e9990f31d46dc93779e6f2eb2b2fe200aa9b11754a7538",
+     "app.js": "662123c70471fd23a9bc75e17ca146efef01e52d91d87338305d5d94f9d043da"
+    },
+    "runtime": "060acf4fcee7d4988db39d60e8b7ed3bd47a91724e203f04b865229e799d7fae"
+   },
+   "parent": "112f847bfae85eb59f825775f78c1ac7c6a64fb1b9f3b7c9eb25d999dd9dc563"
   }
  }
 }
@@ -43700,18 +44039,18 @@ edabc8ce7d7bf61d4ecd36c6af60f1f2b85aa7a8a1e1c16c8e4402dc80f8adb3 tools/quality_b
 299dbc95507d6d081c4b188a7841bdc228a37aec4f193d1de235945087256a77 tools/quality_policy.json
 0bf27d88366d574fe48425f4b2db3b2549de673640d828c898d0f468f64c8e28 tools/quality_v1.sha256
 5d442c22213b545048fc260254cafc7eee73e3a67f8234ea0e861ab427f86209 web/app.css
-4b41f9296e593347d542510199dbe9b8170d933e6a6b3d6fe140de578bcc6be4 web/app.js
+662123c70471fd23a9bc75e17ca146efef01e52d91d87338305d5d94f9d043da web/app.js
 e9f6c686b67852bb6838dbfcaf06a64385cf6ed44f2d03f10d67b6b93cf509ed web/board.js
-d7bbde2a94e695b8064c01e2342aa69bdfec1f8dba604544306d92518e05dc85 web/colour.css
+39ad6e268574724a5d5ab5a2ae26aa55a14d247cc78cc0f856f7f6f0d4d0ef5a web/colour.css
 2219b6976077d91c736e260e16f223f406772bfbf78781923c231f85b1adbcde web/format.mjs
 af958d0b8fd32168a1d2db3a4450927cf3d20c1fd2eb4d0dc559f4d64820fc1b web/icons.js
 e8975cfc00c9b07b7114fe2d44a963fd549f36d8333eae63d7c80615d90b4985 web/index.html
 ce849c90bc8ec101c150eb0d16ae0385e003841c1d05aab61680bca6c988c46c web/look-calendar.css
 3742dfbb8815ceb9a79f25cdf8a2479dad0401c53f787523f0830ef37319cee0 web/look-home.css
-08335cf3398d9f78ec7d813a25e3fee1556fdbb80d30560dfdd93e4cffb33b2f web/look-order.css
+d918c34c41ebc02d3c216635019fca3c831fa57ecdc9107c6876572e5ea910c4 web/look-order.css
 9c82bf8e43b118faa7a34e4d6c260d09b0aacb9605503375759248bcdbc93c7e web/look-records.css
-41c72bef15dc4acb9679f5f3edbb6c1ff0df8d337203538d7b6635be2d88978e web/look-team.css
-5a610ee96e11ff5c076b51a669e229d7b28bfac9c71daa81bafddee14ffb96e5 web/quality-data.json
+a73c27f02e5b3bad9a6de7b125fe1fbaf48aec0c6b609be56b96081bfdef0e05 web/look-team.css
+7c41f4f3d9f6f2fd42b2eac84f9d6447491c873e2f2d72e5b50a4dfd4e39f21b web/quality-data.json
 2f48c86410f410a49509f82dd55defe7999f0ae4b586a8af3b76a9ea24cdf3b0 web/quality.css
 9f6274322ba2642e9eeaebe3751e9dd013e8700f720e73571755f621e9c82db9 web/quality.html
 4dbbba02c54ee09eeed687b4030f8c80ae72e0948b0df2efa1d14a3deb5c6383 web/quality.js
