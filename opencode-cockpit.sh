@@ -26012,6 +26012,7 @@ import * as F from './format.mjs';
     cards: [], cardIndex: {}, holders: {}, diary: {}, diaryDays: {}, tzOffset: null};
   var STATUS = window.OrderStatus, STATUS_POLL = 5000, NOTICE = ['7a', '7b', '7e', '7f'];
   var seatSlots = new Map(), navigation = 0, entrancePending = false;
+  var tileDefinitions = null, tilePalettes = new Set();
   var swarmDesk = null, swarmTimer = null;
   var orderScales = {}, orderPositions = {};
   var knownRows = new Set(), arrivingRows = new Set(), pollDrawing = false, pollNavigation = 0;
@@ -26155,12 +26156,32 @@ import * as F from './format.mjs';
       x: 0, y: 0, width: square, height: square, rx: 8, stroke: 'none', 'aria-hidden': 'true', style: 'fill:var(--seat-' + paint['data-seat-slot'] + '-wash)'}));
     frame.appendChild(icon); return seatLaunchControl(frame, seat, run);
   }
+  // All sizes and all views share one vertically lit paint for each sampled colour.
+  function finishIconTile(icon, palette) {
+    var paintId = 'soft-icon-' + palette;
+    if (!tilePalettes.has(palette)) {
+      if (!tileDefinitions) {
+        var bank = svg('svg', {width: 0, height: 0, 'aria-hidden': 'true', focusable: 'false', 'class': 'soft-icon-paints'});
+        tileDefinitions = svg('defs');
+        bank.appendChild(tileDefinitions);
+        document.querySelector('body').appendChild(bank);
+      }
+      var gradient = svg('linearGradient', {id: paintId, 'data-work-palette': palette, x2: '0%', y2: '100%'});
+      ['0%', '48%', '68%', '100%'].forEach(function (offset) { gradient.appendChild(svg('stop', {offset: offset})); });
+      tileDefinitions.appendChild(gradient);
+      tilePalettes.add(palette);
+    }
+    icon.children[0].classList.add('soft-icon-surface');
+    attrs(icon, {'data-soft-icon': '', 'data-work-palette': palette,
+      style: (icon.getAttribute('style') || '') + ';--soft-face:url(#' + paintId + ')'});
+    return icon;
+  }
   function seatLaunchControl(icon, seat, run) {
     if (!seat || !(seat.actor || seat.id)) { return icon; }
     var actor = seat.actor || seat.id;
     icon.removeAttribute('aria-hidden');
-    if (S.view === 'team' && S.team && run === S.team.run) {
-      icon.setAttribute('data-work-palette', workPalette(S.team, seat));
+    if (/(?:^| )(?:work-icon|seat-icon|cp-graph-avatar)(?: |$)/.test(icon.getAttribute('class') || '')) {
+      finishIconTile(icon, workPalette(S.team && run === S.team.run ? S.team : {}, seat));
     }
     attrs(icon, {role: 'button', tabindex: 0, 'data-seat-open': actor, 'data-seat-run-id': run,
       'aria-label': 'Open ' + seat.name + ' launches', 'aria-haspopup': 'dialog', title: 'Open ' + seat.name + ' launches'});
@@ -27133,14 +27154,16 @@ import * as F from './format.mjs';
   // The canvas uses actor ids for people and order ids for work. Focus remains independent.
   function workPalette(doc, seat) {
     if (!seat) { return 'peach'; }
-    if (seat.actor === doc.ceo) { return 'rose'; }
-    if (seat.actor === doc.judge) { return 'periwinkle'; }
-    if (seat.actor === doc.lead) { return 'lilac'; }
+    if (seat.actor && (seat.actor === doc.ceo || /^human:/.test(seat.actor))) { return 'rose'; }
+    if (seat.actor && (seat.actor === doc.judge || /^program:judge/.test(seat.actor))) { return 'periwinkle'; }
+    if ((seat.actor && seat.actor === doc.lead) || seat.role === 'lead' || seat.id === 'lead') { return 'lilac'; }
     var id = String(seat.id || seat.actor || '').replace(/^agent:/, '').toLowerCase();
     if (id === 'writer') { return 'ice'; }
     if (id === 'reviewer') { return 'coral'; }
     // A custom seat keeps its hue through sorting, search and replay.
-    var hues = ['orchid', 'peach', 'ice', 'petal', 'lilac', 'coral', 'periwinkle', 'rose'], hash = 7;
+    var hues = ['orchid', 'peach', 'ice', 'petal', 'lilac', 'coral', 'periwinkle', 'rose',
+      'salmon', 'dusty-rose', 'brick', 'lemon', 'butter', 'honey', 'pistachio', 'mint', 'sea-glass',
+      'sage', 'teal', 'aqua', 'lake', 'mist-blue', 'cornflower', 'grape', 'oat', 'tea'], hash = 7;
     for (var i = 0; i < id.length; i++) { hash = (31 * hash + id.charCodeAt(i)) >>> 0; }
     return hues[hash % hues.length];
   }
@@ -27151,14 +27174,14 @@ import * as F from './format.mjs';
     icon.appendChild(attrs(symbol, {x: 6, y: 6, width: 28, height: 28}));
     return seatLaunchControl(icon, seat, doc.run);
   }
-  function workIcon(p, doc, size) {
+  function workIcon(p, doc, size, palette) {
     if (p.actor) {
       return attrs(seatIcon(p, doc.run, Math.round(size * 0.625), size), {'data-canvas-icon': p.actor});
     }
     var icon = svg('svg', {viewBox: '0 0 40 40', width: size, height: size, 'data-canvas-icon': 'order', 'aria-hidden': 'true', 'class': 'work-icon'});
     icon.appendChild(svg('rect', {width: 40, height: 40, rx: 9}));
     icon.appendChild(svg('path', {d: 'M11 8 H24 L30 14 V32 H11 Z M24 8 V14 H30 M16 20 H25 M16 25 H23', fill: 'none', stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round'}));
-    return icon;
+    return finishIconTile(icon, palette || 'peach');
   }
   function canonical(doc, actor) { return actor ? person(doc, actor).actor : null; }
   function workAssignee(doc, order) {
@@ -27239,7 +27262,7 @@ import * as F from './format.mjs';
     ledger.forEach(function (e) { if (e.kind === 'order.issued') { issued[e.body.id] = e.seq; } });
     Object.values(orders).slice().sort(function (a, b) { return (issued[a.id] || 0) - (issued[b.id] || 0); }).forEach(function (o) {
       var assigned = workAssignee(doc, o), owner = assigned || person(doc, doc.lead), a = positions[owner.actor] || positions[doc.lead], count = columns[a.id] || 0;
-      var n = {id: o.id, name: o.title || o.id, order: o, p: owner, palette: workPalette(doc, assigned), kind: 'order', x: a.x, y: a.y + a.h + gap + count * (orderHeight + gap), w: nodeWidth, h: orderHeight};
+      var n = {id: o.id, name: o.title || o.id, order: o, p: owner, assignee: assigned && assigned.actor, palette: workPalette(doc, assigned), kind: 'order', x: a.x, y: a.y + a.h + gap + count * (orderHeight + gap), w: nodeWidth, h: orderHeight};
       nodes.push(n); columns[a.id] = count + 1;
       edge(a.id, n.id, 'work', [[a.x, a.y + a.h / 2], [a.x - 16, a.y + a.h / 2], [a.x - 16, n.y + n.h / 2], [n.x, n.y + n.h / 2]]);
     });
@@ -27284,6 +27307,16 @@ import * as F from './format.mjs';
     });
     source.launched = source.started.length;
     return source;
+  }
+  function markCanvasStatus(label) {
+    var tones = {SUCCEEDED: 'mint', DONE: 'mint', RUNNING: 'ice', WORKING: 'ice', LEASED: 'ice',
+      JUDGING: 'ice', ATTENTION: 'butter', FAILED: 'salmon', DEAD: 'salmon', CANCELLED: 'salmon'};
+    var palette = tones[String(label.getAttribute('data-state')).toUpperCase()];
+    if (palette) {
+      attrs(label, {'data-soft-status': '', 'data-work-palette': palette});
+      label.appendChild(h('span', {'class': 'status-icon-face', 'aria-hidden': 'true'}));
+    }
+    return label;
   }
   function canvasState(n, doc, source) {
     if (n.order) {
@@ -27417,10 +27450,10 @@ import * as F from './format.mjs';
       var items = model.nodes.filter(function (n) { return (n.kind === 'order') === group[1]; });
       list.appendChild(h('p', {'class': 'group-heading'}, group[0]));
       items.forEach(function (n) {
-        var b = h('button', {'data-canvas-item': n.id, 'data-name': n.name, 'data-work-palette': n.palette, 'class': 'quiet', type: 'button', title: n.name, 'aria-pressed': String(C.selected === n.id)},
-          n.kind === 'order' ? workIcon({}, doc, 24) : null, n.kind === 'order' ? h('span', {'class': 'cut-text'}, n.name) : seatChip(n.p, doc.run),
+        var b = h('button', {'data-canvas-item': n.id, 'data-name': n.name, 'data-order-assignee': n.assignee, 'data-work-palette': n.palette, 'class': 'quiet', type: 'button', title: n.name, 'aria-pressed': String(C.selected === n.id)},
+          n.kind === 'order' ? workIcon({}, doc, 24, n.palette) : null, n.kind === 'order' ? h('span', {'class': 'cut-text'}, n.name) : seatChip(n.p, doc.run),
           n.order ? null : h('i', {'class': 'dot', 'data-status': canvasState(n, doc, source).getAttribute('data-state'), 'aria-hidden': 'true'}));
-        if (n.order) { b.appendChild(attrs(canvasState(n, doc, source), {'data-canvas-list-state': n.id})); }
+        if (n.order) { b.appendChild(attrs(markCanvasStatus(canvasState(n, doc, source)), {'data-canvas-list-state': n.id})); }
         on(b, 'click', function () { canvasSelect(n.id); }); list.appendChild(b);
       });
       if (!items.length) { list.appendChild(empty('No orders yet.', 'Send a goal from Home.')); }
@@ -27437,10 +27470,10 @@ import * as F from './format.mjs';
     });
     view.appendChild(wires);
     model.nodes.forEach(function (n) {
-      var node = h('button', {'data-canvas-node': n.id, 'data-kind': n.kind, 'data-work-palette': n.palette, 'data-seat-tone': seatTone(n.p, doc.run), 'data-name': n.name, 'data-run': n.order ? doc.run : null, 'data-order': n.order ? n.id : null, 'data-replay': source.future[n.id] ? 'future' : null, type: 'button',
+      var node = h('button', {'data-canvas-node': n.id, 'data-kind': n.kind, 'data-order-assignee': n.assignee, 'data-work-palette': n.palette, 'data-seat-tone': seatTone(n.p, doc.run), 'data-name': n.name, 'data-run': n.order ? doc.run : null, 'data-order': n.order ? n.id : null, 'data-replay': source.future[n.id] ? 'future' : null, type: 'button',
         'aria-pressed': String(C.selected === n.id), title: n.name + (n.order ? '' : ' / ' + n.p.model), style: 'left:' + n.x + 'px;top:' + n.y + 'px;width:' + n.w + 'px;height:' + n.h + 'px'},
-        workIcon(n.order ? {} : n.p, doc, n.order ? 16 : 28), h('strong', {'class': 'cut-text'}, n.name),
-        n.order ? null : h('span', {'class': 'hint cut-text', title: n.p.model}, n.kind === 'person' ? 'Human' : n.kind === 'program' ? 'Program' : n.p.model), canvasState(n, doc, source));
+        workIcon(n.order ? {} : n.p, doc, n.order ? 16 : 28, n.palette), h('strong', {'class': 'cut-text'}, n.name),
+        n.order ? null : h('span', {'class': 'hint cut-text', title: n.p.model}, n.kind === 'person' ? 'Human' : n.kind === 'program' ? 'Program' : n.p.model), markCanvasStatus(canvasState(n, doc, source)));
       node._box = n;
       on(node, 'click', function () { canvasSelect(n.id); }); view.appendChild(node);
     });
@@ -27562,8 +27595,11 @@ import * as F from './format.mjs';
       if (!files.length) { content.appendChild(empty('No files for this selection.', 'Handed-in files will open here for inspection.')); }
     }
     var count = C.tab === 'timeline' ? doc.launches.length : C.tab === 'events' ? rows.length : files.length;
-    var legend = C.tab === 'timeline' ? h('div', {'class': 'timeline-legend', 'data-timeline-legend': '', 'aria-label': 'Order and launch states'},
-      badge('SUCCEEDED'), badge('running'), badge('attention'), badge('FAILED'), badge('planned')) : null;
+    var legend = null;
+    if (C.tab === 'timeline') {
+      legend = h('div', {'class': 'timeline-legend', 'data-timeline-legend': '', 'aria-label': 'Order and launch states'});
+      ['SUCCEEDED', 'running', 'attention', 'FAILED', 'planned'].forEach(function (state) { legend.appendChild(markCanvasStatus(badge(state))); });
+    }
     return [h('div', {'class': 'canvas-panel-head'}, tabs, legend, h('strong', {'class': 'cut-text', title: node ? node.title || node.id : person(doc, selected).name}, node ? node.title || node.id : person(doc, selected).name)), C.tab === 'timeline' ? content : listWindow(content, 'canvas-' + C.tab, count, 3, 144)];
   }
   function workLaunchSteps(doc, l, rows) {
@@ -30910,6 +30946,32 @@ html[data-motion=reduce] [data-hero-action] .hero-action-mark{display:none;}
 @media (forced-colors:active){
   .hero-current{display:none;}
 }
+
+/* A small colored icon uses the same satin surface as the palette swatch. */
+[data-icon-tone="ok"] { --tile-swatch: #adf0d1; --tile-ink: #215743; }
+[data-icon-tone="attention"] { --tile-swatch: #f5ef98; --tile-ink: #654304; }
+[data-icon-tone="accent"] { --tile-swatch: #f6dbff; --tile-ink: #504078; }
+[data-icon-tone="run"] { --tile-swatch: #dbfcff; --tile-ink: #34547a; }
+[data-kind-chip="skill"] { --tile-swatch: #c4ade8; --tile-ink: #473066; }
+[data-kind-chip="artifact"] { --tile-swatch: #ffc197; --tile-ink: #704324; }
+[data-kind-chip="workflow"] { --tile-swatch: #94d9eb; --tile-ink: #275566; }
+[data-kind-chip="lesson"] { --tile-swatch: #d6e8aa; --tile-ink: #425227; }
+:root body :is(main, #seat-drawer, #preview) :is(
+  [data-card-icon]:is([data-icon-tone="ok"], [data-icon-tone="attention"], [data-icon-tone="accent"], [data-icon-tone="run"]),
+  [data-kind-chip]:is([data-kind-chip="skill"], [data-kind-chip="artifact"], [data-kind-chip="workflow"], [data-kind-chip="lesson"])
+) {
+  --tile-rim: rgb(255 255 255 / .49) 0 0 0 1px inset;
+  --tile-light: linear-gradient(#ffffff6e 0%, transparent 48% 79%, #271e3009 100%);
+  background: var(--tile-light) var(--tile-swatch);
+  border-radius: .375rem;
+  color: var(--tile-ink);
+  box-shadow: var(--tile-depth, var(--tile-rim),
+              0 1px 1px rgb(34 29 38 / .13),
+              0 3px 5px -2px color-mix(in srgb, var(--tile-swatch) 55%, rgb(34 29 38 / .3)));
+}
+[data-card-icon][data-icon-tone] {
+  --tile-depth: inset 0 0 0 1px #fff9, 0 1px 2px #3c435018, 0 3px 6px -4px var(--tile-swatch);
+}
 OC_EOF_91
 cat > 'web/format.mjs' <<'OC_EOF_92'
 /* Deterministic display formatting. Time and timezone are supplied by callers. */
@@ -32967,35 +33029,73 @@ html[data-route=team] #seat-drawer .empty-tone { stroke: #746783; stroke-opacity
   border-radius:8px;
   box-shadow:0 1px 4px #23252b0c;
 }
-/* The team map uses the same sampled wash for an actor, their orders and their timeline. */
-:root body [data-view=team] [data-work-palette=rose]       { --work-wash: #efbfca; --work-ink: #7e3555; }
-:root body [data-view=team] [data-work-palette=periwinkle] { --work-wash: #c4c7ff; --work-ink: #414a89; }
-:root body [data-view=team] [data-work-palette=lilac]      { --work-wash: #ddceff; --work-ink: #60409a; }
-:root body [data-view=team] [data-work-palette=ice]        { --work-wash: #d1e2ff; --work-ink: #325b94; }
-:root body [data-view=team] [data-work-palette=coral]      { --work-wash: #ffb9b4; --work-ink: #883f41; }
-:root body [data-view=team] [data-work-palette=orchid]     { --work-wash: #e4a9cd; --work-ink: #713257; }
-:root body [data-view=team] [data-work-palette=peach]      { --work-wash: #fcc8b5; --work-ink: #864b32; }
-:root body [data-view=team] [data-work-palette=petal]      { --work-wash: #fcd4ff; --work-ink: #76407f; }
+[data-view=help] .order-seat-stack {
+  flex-wrap:wrap;
+  gap:4px;
+  max-inline-size:100%;
+}
+[data-view=help] .order-seat-stack > span { margin-inline:0; }
+/* Named actor and order colours are sampled at the centre of the 26 reference swatches. */
+[data-work-palette=rose] { --work-wash: #F6BAC6; --work-ink: #773852; }
+[data-work-palette=coral] { --work-wash: #FFB6AA; --work-ink: #793F42; }
+[data-work-palette=salmon] { --work-wash: #FF937F; --work-ink: #6B2D2C; }
+[data-work-palette=orchid] { --work-wash: #E68FAF; --work-ink: #672C4C; }
+[data-work-palette=dusty-rose] { --work-wash: #CC9AA3; --work-ink: #613844; }
+[data-work-palette=brick] { --work-wash: #D88D78; --work-ink: #5A332E; }
+[data-work-palette=lemon] { --work-wash: #F5EF98; --work-ink: #625720; }
+[data-work-palette=butter] { --work-wash: #FFE6A1; --work-ink: #68511E; }
+[data-work-palette=peach] { --work-wash: #FFC197; --work-ink: #75452D; }
+[data-work-palette=honey] { --work-wash: #EFC56C; --work-ink: #634A1C; }
+[data-work-palette=pistachio] { --work-wash: #D6E8AA; --work-ink: #46582A; }
+[data-work-palette=mint] { --work-wash: #ADF0D1; --work-ink: #295846; }
+[data-work-palette=sea-glass] { --work-wash: #8ED8C7; --work-ink: #23534A; }
+[data-work-palette=sage] { --work-wash: #B4C9AA; --work-ink: #3B5035; }
+[data-work-palette=teal] { --work-wash: #65B9B7; --work-ink: #164745; }
+[data-work-palette=aqua] { --work-wash: #DBFCFF; --work-ink: #385F67; }
+[data-work-palette=ice] { --work-wash: #C2DDFF; --work-ink: #355784; }
+[data-work-palette=lake] { --work-wash: #94D9EB; --work-ink: #275362; }
+[data-work-palette=mist-blue] { --work-wash: #A7BACA; --work-ink: #354C5C; }
+[data-work-palette=cornflower] { --work-wash: #99B8ED; --work-ink: #2B4878; }
+[data-work-palette=petal] { --work-wash: #F6DBFF; --work-ink: #6E4278; }
+[data-work-palette=periwinkle] { --work-wash: #DAD2FF; --work-ink: #494482; }
+[data-work-palette=lilac] { --work-wash: #C4ADE8; --work-ink: #56337D; }
+[data-work-palette=grape] { --work-wash: #AE86C2; --work-ink: #4B2A5B; }
+[data-work-palette=oat] { --work-wash: #E8D7BD; --work-ink: #5F5039; }
+[data-work-palette=tea] { --work-wash: #C9AC94; --work-ink: #574332; }
 
-:root body [data-view=team] :is(.work-icon[data-work-palette], [data-work-palette] .work-icon, [data-work-palette] .activity-icon) {
-  color: var(--work-ink);
+.soft-icon-paints { position:absolute; pointer-events:none; }
+.soft-icon-paints stop { stop-color:var(--work-wash); }
+.soft-icon-paints stop:first-child { stop-color:color-mix(in srgb, white 44%, var(--work-wash)); }
+.soft-icon-paints stop:last-child { stop-color:color-mix(in srgb, black 3%, var(--work-wash)); }
+svg[data-soft-icon] {
+  overflow:visible;
+  color:var(--work-ink);
 }
-:root body [data-view=team] .work-icon > rect {
-  fill: var(--work-wash, var(--wash));
+html:root body svg[data-soft-icon][data-work-palette] > rect.soft-icon-surface {
+  fill:var(--soft-face) !important;
+  stroke:color-mix(in srgb, white 62%, var(--work-wash));
+  vector-effect:non-scaling-stroke;
+  stroke-width:1px;
+  filter:drop-shadow(0 1px .65px color-mix(in srgb, var(--work-ink) 25%, transparent))
+         drop-shadow(0 1.5px 1.65px color-mix(in srgb, var(--work-ink) 19%, transparent));
 }
-:root body [data-view=team] [data-work-palette] .work-icon > path {
-  stroke-width: var(--map-glyph-stroke, 1.3px);
+:root body [data-view=team] svg[data-soft-icon] .activity-icon { color:var(--work-ink); }
+:root body svg[data-soft-icon] .logo path { fill:var(--work-ink); }
+:root body svg[data-soft-icon] > path {
+  stroke-width:var(--map-glyph-stroke, 1.3px);
   vector-effect:non-scaling-stroke;
 }
-:root body [data-view=team] [data-work-palette] :is(.seat-icon > [data-seat-wash], .cp-graph-avatar-wash) {
-  fill: var(--work-wash) !important;
-  stroke: none;
+html:root body svg[data-soft-icon] :is(.cp-graph-initials, .cp-graph-anonymous) {
+  fill:var(--work-ink) !important;
 }
-:root body [data-view=team] [data-work-palette] .logo path { fill: var(--work-ink); }
-:root body [data-view=team] [data-work-palette] :is(.cp-graph-initials, .cp-graph-anonymous) {
-  fill: var(--work-ink) !important;
+@media (forced-colors:active) {
+  html:root body svg[data-soft-icon][data-work-palette] > rect.soft-icon-surface {
+    fill:Canvas !important;
+    filter:none;
+    stroke:CanvasText;
+  }
+  html:root body svg[data-soft-icon] .logo path { fill:CanvasText; }
 }
-
 :root body [data-view=team] [data-work-palette] .timeline-bar { fill:var(--work-wash); }
 :root body [data-view=team] [data-work-palette] [data-timeline-duration] { fill:var(--work-ink); }
 :root body [data-view=team] [data-timeline-row][data-work-palette] > [data-seat-colour],
@@ -33035,6 +33135,41 @@ html[data-route=team] #seat-drawer .empty-tone { stroke: #746783; stroke-opacity
   color:var(--canvas-subtle);
   font-weight:400;
 }
+/* Colour sits behind the status symbol, keeping the label on the white card. */
+#team-canvas-slot .badge[data-soft-status] {
+  --mark-plate: 14px;
+  position:relative;
+  isolation:isolate;
+  padding-inline:0;
+  background:transparent;
+  color:var(--canvas-subtle);
+  font-weight:400;
+}
+#team-canvas-slot .badge[data-soft-status]::before {
+  flex-basis:.76em;
+  width:.76em;
+  height:.76em;
+  margin-inline:calc((var(--mark-plate) - .76em) / 2);
+  background-color:var(--work-ink);
+}
+#team-canvas-slot .badge[data-soft-status] > .status-icon-face {
+  position:absolute;
+  inset-inline-start:0;
+  inset-block-start:50%;
+  transform:translateY(-50%);
+  width:var(--mark-plate);
+  height:var(--mark-plate);
+  border-radius:.27em;
+  pointer-events:none;
+  z-index:-1;
+  --mark-glint:color-mix(in srgb, white 44%, var(--work-wash));
+  --mark-foot:color-mix(in srgb, black 3%, var(--work-wash));
+  background:linear-gradient(var(--mark-glint), var(--work-wash) 48% 68%, var(--mark-foot));
+  box-shadow:inset 0 0 0 .6px rgb(255 255 255 / .5), inset 0 -1.6px 0 rgb(255 255 255 / .14), 0 1px 1.3px color-mix(in srgb, var(--work-ink) 32%, transparent);
+}
+@media (forced-colors:active) {
+  #team-canvas-slot .badge[data-soft-status] > .status-icon-face { display:none; }
+}
 #team-canvas-slot .timeline-legend [data-state=planned]::before {
   outline:0;
   box-shadow:inset 0 0 0 1.6px var(--canvas-current);
@@ -33072,7 +33207,7 @@ html[data-route=team] #seat-drawer .empty-tone { stroke: #746783; stroke-opacity
   justify-self:stretch;
   margin-inline-start:7px;
   max-inline-size:calc(100% - 7px);
-  overflow:hidden;
+  overflow:visible;
 }
 #team-canvas-slot [data-gantt-label] .cut-text { flex:auto; }
 #team-canvas-slot .gantt-track {
@@ -33161,6 +33296,21 @@ html[data-motion=on] [data-view=team] .level-slab{transition:translate 560ms cub
     grid-template-columns:var(--team-column);
     grid-template-rows:auto;
   }
+  #team-seat-slot .full-seat-panel > .seat-relations {
+    grid-column:1;
+    grid-row:auto;
+    padding-inline-start:0;
+  }
+  #team-seat-slot .seat-full-stats { grid:auto-flow / var(--team-pair); }
+  #team-seat-slot .seat-full-stats .work-stat { min-inline-size:0; }
+  #team-seat-slot .seat-full-columns {
+    display:flex;
+    flex-direction:column;
+  }
+  #team-seat-slot :is([data-seat-talk], [data-seat-runs]) {
+    grid-template-rows:auto auto minmax(11rem, auto);
+    gap:8px;
+  }
   html[data-route=team] body :is(.canvas-stats,.canvas-tablist) { justify-content:start; }
   html[data-route=team] body [data-canvas-rail] { height:12rem; }
   #team-canvas-slot .canvas-workarea { grid-template-columns:minmax(0,1fr); }
@@ -33209,7 +33359,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
  "criteria_sha256": "44159b4742b475ce35c3c9ed8dc29df84f33592cf52da9556bde4a5137704c6c",
  "instruments_sha256": "849c6dcfac1405f55e87137179065f43c804b5cd63d86a8cdf5118cbcb0de311",
  "fixture": "release-review-v1",
- "measured_at": "2026-11-24T15:20:36+00:00",
+ "measured_at": "2026-11-24T16:20:05+00:00",
  "versions": [
   {
    "id": "paid",
@@ -33223,9 +33373,9 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "id": "gpt",
    "name": "GPT-6.2",
    "color": "#005ea8",
-   "revision": "Runtime 0c7ca209864b",
-   "runtime_sha256": "0c7ca209864be009c96ad768ef0d32620dd68440bff7f5f12f6eab74834d7bf3",
-   "captured": "2026-11-24T15:20:36+00:00"
+   "revision": "Runtime d777d3bd9270",
+   "runtime_sha256": "d777d3bd9270a16a10403aea1cffb5c774ed23d442c3ac8b574df09bca030146",
+   "captured": "2026-11-24T16:20:05+00:00"
   },
   {
    "id": "mine",
@@ -33347,7 +33497,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "total": 8,
      "measured": 8,
      "passed": 1,
-     "score": 0.7473702686202687
+     "score": 0.7502869352869354
     },
     "mine": {
      "total": 8,
@@ -33443,7 +33593,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "total": 8,
      "measured": 8,
      "passed": 6,
-     "score": 0.9314027541446211
+     "score": 0.9308751753620605
     },
     "mine": {
      "total": 8,
@@ -34748,7 +34898,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "passed": true,
      "score": 1,
      "evidence": {
-      "revision": "f4ba0a4df70ec4c8bd713ca29847e321455e9210",
+      "revision": "92a142fcccab471a923c1066a37e24d86d40513e",
       "scanner": "privacy_scan",
       "scope": "reachable history"
      }
@@ -35367,11 +35517,11 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 0.04,
+     "value": 0.039,
      "passed": false,
-     "score": 0.7333333333333333,
+     "score": 0.74,
      "evidence": {
-      "observed": 0.039,
+      "observed": 0.04,
       "reference": 0.079,
       "viewport": [
        1440,
@@ -35427,11 +35577,11 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 0.027,
+     "value": 0.025,
      "passed": false,
-     "score": 0.865,
+     "score": 0.875,
      "evidence": {
-      "observed": 0.029,
+      "observed": 0.031,
       "reference": 0.056,
       "viewport": [
        1440,
@@ -35667,11 +35817,11 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 0.018999999999999996,
+     "value": 0.017999999999999995,
      "passed": false,
-     "score": 0.8733333333333334,
+     "score": 0.8800000000000001,
      "evidence": {
-      "observed": 0.04,
+      "observed": 0.041,
       "reference": 0.059,
       "viewport": [
        1440,
@@ -36896,16 +37046,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 54.799999713897705,
+     "value": 45.40000009536743,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       51.59999990463257,
-       48.90000009536743,
-       54.89999961853027,
-       54.799999713897705,
-       73.90000009536743
+       70.59999990463257,
+       45.09999990463257,
+       45.40000009536743,
+       46.19999980926514,
+       45.19999980926514
       ],
       "aggregate": "median",
       "cold": true
@@ -36956,16 +37106,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 32.0,
+     "value": 24.0,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       32.0,
-       28.0,
-       32.0,
-       32.0,
-       32.0
+       24.0,
+       24.0,
+       24.0,
+       24.0,
+       24.0
       ],
       "aggregate": "median",
       "cold": true
@@ -37016,16 +37166,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 890.9130859375,
+     "value": 898.2919921875,
      "passed": false,
-     "score": 0.6456958225795201,
+     "score": 0.641578129359654,
      "evidence": {
       "samples": [
-       890.9130859375,
-       890.9130859375,
-       890.9130859375,
-       890.9130859375,
-       890.9130859375
+       898.2919921875,
+       898.2919921875,
+       898.2919921875,
+       898.2919921875,
+       898.2919921875
       ],
       "aggregate": "median",
       "cold": true
@@ -37129,16 +37279,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "reason": "No rendered link to a supported order detail API"
     },
     "gpt": {
-     "value": 56.80000019073486,
+     "value": 62.5,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       57.5,
-       52.30000019073486,
-       56.80000019073486,
-       68.2999997138977,
-       54.5
+       62.5,
+       62.5,
+       74.30000019073486,
+       62,
+       60.5
       ],
       "aggregate": "median"
      }
@@ -37180,16 +37330,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "reason": "No rendered link to a supported order detail API"
     },
     "gpt": {
-     "value": 68.2999997138977,
+     "value": 74.30000019073486,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       57.5,
-       52.30000019073486,
-       56.80000019073486,
-       68.2999997138977,
-       54.5
+       62.5,
+       62.5,
+       74.30000019073486,
+       62,
+       60.5
       ],
       "aggregate": "maximum"
      }
@@ -37233,12 +37383,12 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 31.336854730706115,
+     "value": 31.349207175580375,
      "passed": false,
-     "score": 0.8055262105774491,
+     "score": 0.8054232735368302,
      "evidence": {
-      "seconds": 12.003699999809266,
-      "bytes": 385186,
+      "seconds": 12.001400000095368,
+      "bytes": 385264,
       "requests": 13,
       "repeat": true
      }
@@ -37278,12 +37428,12 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 1.0829994085329162,
+     "value": 1.083206959179487,
      "passed": true,
      "score": 1,
      "evidence": {
-      "seconds": 12.003699999809266,
-      "bytes": 385186,
+      "seconds": 12.001400000095368,
+      "bytes": 385264,
       "requests": 13,
       "repeat": true
      }
@@ -39868,14 +40018,14 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
  "evolution": {
   "slot": "gpt",
   "improved": [
+   "visual.accent",
    "visual.tint",
-   "visual.tone",
-   "visual.type"
+   "visual.tone"
   ],
   "regressed": [],
   "passed": true,
-  "previous_revision": "Runtime 7019c4912bc7",
-  "previous_report_sha256": "9efb7146f5633ce84af3986864f64ec0e51acc02323f524e1f5312872191f3cc",
+  "previous_revision": "Runtime 0c7ca209864b",
+  "previous_report_sha256": "bef233a06d3c1a90858966bcf58bb147dfd8c42e25f576d025e4381e2052747a",
   "previous_values": {
    "correct.tests": 1.0,
    "correct.invariants": 13,
@@ -39910,12 +40060,12 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "band.ledger": 4,
    "band.swarms": 4,
    "visual.accent": 0.04,
-   "visual.tint": 0.034,
+   "visual.tint": 0.027,
    "visual.tiers": 1,
    "visual.hues": 0,
    "visual.hard": 0.011999999999999997,
-   "visual.tone": 0.019999999999999997,
-   "visual.type": 6,
+   "visual.tone": 0.018999999999999996,
+   "visual.type": 5,
    "visual.density": 48.6111111111111,
    "feature.lanes": 5,
    "feature.sidebar": 1,
@@ -39941,14 +40091,14 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "mobile.files": 2,
    "mobile.ledger": 2,
    "mobile.swarms": 2,
-   "speed.home": 71.59999990463257,
+   "speed.home": 54.799999713897705,
    "speed.paint": 32.0,
-   "speed.bytes": 888.775390625,
+   "speed.bytes": 890.9130859375,
    "speed.requests": 17.0,
-   "speed.order": 62.799999713897705,
-   "speed.tail": 78.59999990463257,
-   "speed.pollbytes": 31.34075787019632,
-   "speed.pollrate": 1.0831708576874637,
+   "speed.order": 56.80000019073486,
+   "speed.tail": 68.2999997138977,
+   "speed.pollbytes": 31.336854730706115,
+   "speed.pollrate": 1.0829994085329162,
    "robust.offline": 1,
    "robust.stale": 1,
    "robust.overlap": 1,
@@ -39975,7 +40125,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "verify.hash": 1,
    "verify.raw": 1
   },
-  "previous_runtime_sha256": "7019c4912bc7d47d8faba963f1cccaadcdba8deba0c0dca7d4650e03555411a9",
+  "previous_runtime_sha256": "0c7ca209864be009c96ad768ef0d32620dd68440bff7f5f12f6eab74834d7bf3",
   "motion": {
    "instrument": {
     "capture": "42ecf3865b6ae96368e3a7761c34104daa7d9145ff818be5459532d2c8c99f8f",
@@ -40731,808 +40881,6 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
     }
    },
    "before": {
-    "normal": {
-     "background": {
-      "pixels": 51927,
-      "steps": [
-       [
-        147,
-        14227
-       ],
-       [
-        273,
-        17610
-       ],
-       [
-        398,
-        17892
-       ],
-       [
-        523,
-        19136
-       ],
-       [
-        647,
-        20732
-       ],
-       [
-        772,
-        24509
-       ],
-       [
-        898,
-        35165
-       ],
-       [
-        1023,
-        39594
-       ],
-       [
-        1148,
-        38664
-       ],
-       [
-        1272,
-        35534
-       ],
-       [
-        1398,
-        31445
-       ],
-       [
-        1523,
-        27409
-       ],
-       [
-        1647,
-        21284
-       ],
-       [
-        1772,
-        13521
-       ],
-       [
-        1897,
-        29601
-       ],
-       [
-        2022,
-        37554
-       ],
-       [
-        2147,
-        39952
-       ],
-       [
-        2271,
-        41561
-       ],
-       [
-        2398,
-        42555
-       ],
-       [
-        2523,
-        43429
-       ],
-       [
-        2647,
-        43711
-       ],
-       [
-        2772,
-        34452
-       ],
-       [
-        2898,
-        14094
-       ],
-       [
-        3022,
-        2204
-       ],
-       [
-        3147,
-        373
-       ],
-       [
-        3272,
-        706
-       ],
-       [
-        3398,
-        11534
-       ],
-       [
-        3523,
-        33471
-       ],
-       [
-        3648,
-        43320
-       ],
-       [
-        3773,
-        43032
-       ],
-       [
-        3897,
-        42264
-       ],
-       [
-        4022,
-        41584
-       ],
-       [
-        4146,
-        37611
-       ],
-       [
-        4272,
-        30596
-       ],
-       [
-        4396,
-        13416
-       ],
-       [
-        4522,
-        1
-       ],
-       [
-        4647,
-        6995
-       ],
-       [
-        4773,
-        24161
-       ],
-       [
-        4897,
-        34584
-       ],
-       [
-        5023,
-        39533
-       ],
-       [
-        5148,
-        41934
-       ],
-       [
-        5273,
-        42279
-       ],
-       [
-        5397,
-        41952
-       ],
-       [
-        5523,
-        34864
-       ],
-       [
-        5647,
-        19003
-       ],
-       [
-        5772,
-        11541
-       ],
-       [
-        5897,
-        5605
-       ],
-       [
-        6023,
-        6270
-       ],
-       [
-        6148,
-        14323
-       ],
-       [
-        6272,
-        27990
-       ],
-       [
-        6398,
-        41073
-       ],
-       [
-        6522,
-        43431
-       ],
-       [
-        6647,
-        42756
-       ],
-       [
-        6772,
-        41903
-       ],
-       [
-        6897,
-        41161
-       ],
-       [
-        7022,
-        40709
-       ],
-       [
-        7147,
-        38180
-       ],
-       [
-        7272,
-        33702
-       ],
-       [
-        7398,
-        28179
-       ],
-       [
-        7523,
-        28318
-       ],
-       [
-        7647,
-        28634
-       ],
-       [
-        7772,
-        29148
-       ],
-       [
-        7898,
-        31103
-       ],
-       [
-        8022,
-        32704
-       ],
-       [
-        8147,
-        29501
-       ],
-       [
-        8272,
-        22749
-       ],
-       [
-        8398,
-        22442
-       ],
-       [
-        8522,
-        23536
-       ]
-      ]
-     },
-     "title": {
-      "pixels": 628,
-      "steps": [
-       [
-        147,
-        323
-       ],
-       [
-        273,
-        478
-       ],
-       [
-        398,
-        529
-       ],
-       [
-        523,
-        459
-       ],
-       [
-        647,
-        484
-       ],
-       [
-        772,
-        500
-       ],
-       [
-        898,
-        515
-       ],
-       [
-        1023,
-        528
-       ],
-       [
-        1148,
-        553
-       ],
-       [
-        1272,
-        579
-       ],
-       [
-        1398,
-        588
-       ],
-       [
-        1523,
-        593
-       ],
-       [
-        1647,
-        587
-       ],
-       [
-        1772,
-        585
-       ],
-       [
-        1897,
-        614
-       ],
-       [
-        2022,
-        606
-       ],
-       [
-        2147,
-        611
-       ],
-       [
-        2271,
-        626
-       ],
-       [
-        2398,
-        616
-       ],
-       [
-        2523,
-        616
-       ],
-       [
-        2647,
-        560
-       ],
-       [
-        2772,
-        597
-       ],
-       [
-        2898,
-        613
-       ],
-       [
-        3022,
-        596
-       ],
-       [
-        3147,
-        605
-       ],
-       [
-        3272,
-        593
-       ],
-       [
-        3398,
-        588
-       ],
-       [
-        3523,
-        480
-       ],
-       [
-        3648,
-        445
-       ],
-       [
-        3773,
-        372
-       ],
-       [
-        3897,
-        192
-       ],
-       [
-        4022,
-        0
-       ],
-       [
-        4146,
-        0
-       ],
-       [
-        4272,
-        183
-       ],
-       [
-        4396,
-        376
-       ],
-       [
-        4522,
-        445
-       ],
-       [
-        4647,
-        480
-       ],
-       [
-        4773,
-        587
-       ],
-       [
-        4897,
-        593
-       ],
-       [
-        5023,
-        603
-       ],
-       [
-        5148,
-        593
-       ],
-       [
-        5273,
-        613
-       ],
-       [
-        5397,
-        597
-       ],
-       [
-        5523,
-        560
-       ],
-       [
-        5647,
-        616
-       ],
-       [
-        5772,
-        616
-       ],
-       [
-        5897,
-        626
-       ],
-       [
-        6023,
-        611
-       ],
-       [
-        6148,
-        606
-       ],
-       [
-        6272,
-        614
-       ],
-       [
-        6398,
-        585
-       ],
-       [
-        6522,
-        586
-       ],
-       [
-        6647,
-        594
-       ],
-       [
-        6772,
-        587
-       ],
-       [
-        6897,
-        580
-       ],
-       [
-        7022,
-        553
-       ],
-       [
-        7147,
-        529
-       ],
-       [
-        7272,
-        516
-       ],
-       [
-        7398,
-        439
-       ],
-       [
-        7523,
-        342
-       ],
-       [
-        7647,
-        199
-       ],
-       [
-        7772,
-        54
-       ],
-       [
-        7898,
-        30
-       ],
-       [
-        8022,
-        0
-       ],
-       [
-        8147,
-        1
-       ],
-       [
-        8272,
-        33
-       ],
-       [
-        8398,
-        52
-       ],
-       [
-        8522,
-        201
-       ]
-      ]
-     }
-    },
-    "reduce": {
-     "background": {
-      "pixels": 52301,
-      "steps": [
-       [
-        144,
-        0
-       ],
-       [
-        269,
-        0
-       ],
-       [
-        394,
-        0
-       ],
-       [
-        519,
-        0
-       ],
-       [
-        644,
-        0
-       ],
-       [
-        769,
-        0
-       ],
-       [
-        894,
-        0
-       ],
-       [
-        1019,
-        0
-       ],
-       [
-        1144,
-        0
-       ],
-       [
-        1268,
-        0
-       ],
-       [
-        1394,
-        0
-       ],
-       [
-        1518,
-        0
-       ],
-       [
-        1644,
-        0
-       ],
-       [
-        1768,
-        0
-       ],
-       [
-        1894,
-        0
-       ],
-       [
-        2019,
-        0
-       ],
-       [
-        2143,
-        0
-       ],
-       [
-        2269,
-        0
-       ],
-       [
-        2394,
-        0
-       ],
-       [
-        2519,
-        0
-       ],
-       [
-        2644,
-        0
-       ],
-       [
-        2769,
-        0
-       ],
-       [
-        2893,
-        0
-       ],
-       [
-        3019,
-        0
-       ],
-       [
-        3144,
-        0
-       ],
-       [
-        3268,
-        0
-       ],
-       [
-        3393,
-        0
-       ]
-      ]
-     },
-     "title": {
-      "pixels": 627,
-      "steps": [
-       [
-        144,
-        0
-       ],
-       [
-        269,
-        0
-       ],
-       [
-        394,
-        0
-       ],
-       [
-        519,
-        0
-       ],
-       [
-        644,
-        0
-       ],
-       [
-        769,
-        0
-       ],
-       [
-        894,
-        0
-       ],
-       [
-        1019,
-        0
-       ],
-       [
-        1144,
-        0
-       ],
-       [
-        1268,
-        0
-       ],
-       [
-        1394,
-        0
-       ],
-       [
-        1518,
-        0
-       ],
-       [
-        1644,
-        0
-       ],
-       [
-        1768,
-        0
-       ],
-       [
-        1894,
-        0
-       ],
-       [
-        2019,
-        0
-       ],
-       [
-        2143,
-        0
-       ],
-       [
-        2269,
-        0
-       ],
-       [
-        2394,
-        0
-       ],
-       [
-        2519,
-        0
-       ],
-       [
-        2644,
-        0
-       ],
-       [
-        2769,
-        0
-       ],
-       [
-        2893,
-        0
-       ],
-       [
-        3019,
-        0
-       ],
-       [
-        3144,
-        0
-       ],
-       [
-        3268,
-        0
-       ],
-       [
-        3393,
-        0
-       ]
-      ]
-     }
-    },
-    "assets": {
-     "app.css": "5d442c22213b545048fc260254cafc7eee73e3a67f8234ea0e861ab427f86209",
-     "look-home.css": "3742dfbb8815ceb9a79f25cdf8a2479dad0401c53f787523f0830ef37319cee0",
-     "look-calendar.css": "29bc824dba486a6c05cbcefd5f77afc2ee400f1138956126d3d975026302ad4f",
-     "look-order.css": "b75e89f20cb5c1761b07a614d3ac6fd41dcf999bcf4fc51bec24a17aedf28ba5",
-     "look-team.css": "617cf5935ac9ca7421a6ffe1334d6a9a68316763af53de6724f1d58d55537a73",
-     "look-records.css": "311490616136c021d20ef999c38ebee1e4a4c4634ecd5fb823758e16f3490c83",
-     "colour.css": "fa2c37ad3c8bf3ed76e2f07ee1505c507ed150bd2d1a1772de569a6db1f5c25a",
-     "swarm.css": "12ee29f0d12215967f7344727b0d8af6fd3af24f4f87ce8e321035b0074c7bad",
-     "icons.js": "af958d0b8fd32168a1d2db3a4450927cf3d20c1fd2eb4d0dc559f4d64820fc1b",
-     "status.js": "ea2b20db35b62d8b21432a95f54fe2b4ce0b8372969d8e6763b515c695a5ee5d",
-     "board.js": "e9f6c686b67852bb6838dbfcaf06a64385cf6ed44f2d03f10d67b6b93cf509ed",
-     "swarm.js": "d4cb9c903f61abd152e9990f31d46dc93779e6f2eb2b2fe200aa9b11754a7538",
-     "app.js": "c02f01090f595839fff3afead39c91a80b5c2c9324d47c55f6979b728c0d3a34"
-    },
-    "runtime": "7019c4912bc7d47d8faba963f1cccaadcdba8deba0c0dca7d4650e03555411a9"
-   },
-   "after": {
     "normal": {
      "background": {
       "pixels": 51927,
@@ -42334,7 +41682,809 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
     },
     "runtime": "0c7ca209864be009c96ad768ef0d32620dd68440bff7f5f12f6eab74834d7bf3"
    },
-   "parent": "9efb7146f5633ce84af3986864f64ec0e51acc02323f524e1f5312872191f3cc"
+   "after": {
+    "normal": {
+     "background": {
+      "pixels": 51927,
+      "steps": [
+       [
+        147,
+        11105
+       ],
+       [
+        272,
+        17609
+       ],
+       [
+        397,
+        17891
+       ],
+       [
+        522,
+        19028
+       ],
+       [
+        647,
+        20906
+       ],
+       [
+        772,
+        24402
+       ],
+       [
+        897,
+        35159
+       ],
+       [
+        1022,
+        39595
+       ],
+       [
+        1148,
+        38662
+       ],
+       [
+        1272,
+        35537
+       ],
+       [
+        1397,
+        31436
+       ],
+       [
+        1522,
+        28126
+       ],
+       [
+        1647,
+        20234
+       ],
+       [
+        1772,
+        13303
+       ],
+       [
+        1897,
+        29734
+       ],
+       [
+        2022,
+        37557
+       ],
+       [
+        2147,
+        40034
+       ],
+       [
+        2272,
+        41671
+       ],
+       [
+        2397,
+        42495
+       ],
+       [
+        2522,
+        43428
+       ],
+       [
+        2648,
+        43707
+       ],
+       [
+        2773,
+        34523
+       ],
+       [
+        2897,
+        12973
+       ],
+       [
+        3022,
+        2505
+       ],
+       [
+        3148,
+        373
+       ],
+       [
+        3272,
+        745
+       ],
+       [
+        3397,
+        11352
+       ],
+       [
+        3522,
+        33422
+       ],
+       [
+        3647,
+        43345
+       ],
+       [
+        3772,
+        43028
+       ],
+       [
+        3897,
+        42268
+       ],
+       [
+        4022,
+        41584
+       ],
+       [
+        4147,
+        37698
+       ],
+       [
+        4272,
+        30393
+       ],
+       [
+        4397,
+        13385
+       ],
+       [
+        4522,
+        1
+       ],
+       [
+        4647,
+        6995
+       ],
+       [
+        4772,
+        24163
+       ],
+       [
+        4897,
+        34586
+       ],
+       [
+        5023,
+        39532
+       ],
+       [
+        5147,
+        41936
+       ],
+       [
+        5272,
+        42279
+       ],
+       [
+        5397,
+        41957
+       ],
+       [
+        5522,
+        34859
+       ],
+       [
+        5647,
+        19177
+       ],
+       [
+        5772,
+        11470
+       ],
+       [
+        5897,
+        5468
+       ],
+       [
+        6023,
+        6269
+       ],
+       [
+        6147,
+        13488
+       ],
+       [
+        6278,
+        28855
+       ],
+       [
+        6401,
+        42577
+       ],
+       [
+        6522,
+        42799
+       ],
+       [
+        6647,
+        42764
+       ],
+       [
+        6772,
+        41943
+       ],
+       [
+        6897,
+        41117
+       ],
+       [
+        7021,
+        40707
+       ],
+       [
+        7147,
+        38180
+       ],
+       [
+        7272,
+        33697
+       ],
+       [
+        7397,
+        28166
+       ],
+       [
+        7522,
+        28314
+       ],
+       [
+        7647,
+        28636
+       ],
+       [
+        7772,
+        29211
+       ],
+       [
+        7897,
+        30946
+       ],
+       [
+        8023,
+        32948
+       ],
+       [
+        8147,
+        29425
+       ],
+       [
+        8272,
+        22508
+       ],
+       [
+        8397,
+        22580
+       ],
+       [
+        8522,
+        23534
+       ]
+      ]
+     },
+     "title": {
+      "pixels": 628,
+      "steps": [
+       [
+        147,
+        323
+       ],
+       [
+        272,
+        478
+       ],
+       [
+        397,
+        529
+       ],
+       [
+        522,
+        459
+       ],
+       [
+        647,
+        484
+       ],
+       [
+        772,
+        500
+       ],
+       [
+        897,
+        515
+       ],
+       [
+        1022,
+        528
+       ],
+       [
+        1148,
+        553
+       ],
+       [
+        1272,
+        579
+       ],
+       [
+        1397,
+        588
+       ],
+       [
+        1522,
+        594
+       ],
+       [
+        1647,
+        586
+       ],
+       [
+        1772,
+        586
+       ],
+       [
+        1897,
+        613
+       ],
+       [
+        2022,
+        606
+       ],
+       [
+        2147,
+        611
+       ],
+       [
+        2272,
+        626
+       ],
+       [
+        2397,
+        616
+       ],
+       [
+        2522,
+        616
+       ],
+       [
+        2648,
+        560
+       ],
+       [
+        2773,
+        597
+       ],
+       [
+        2897,
+        614
+       ],
+       [
+        3022,
+        595
+       ],
+       [
+        3148,
+        605
+       ],
+       [
+        3272,
+        593
+       ],
+       [
+        3397,
+        587
+       ],
+       [
+        3522,
+        480
+       ],
+       [
+        3647,
+        445
+       ],
+       [
+        3772,
+        372
+       ],
+       [
+        3897,
+        192
+       ],
+       [
+        4022,
+        0
+       ],
+       [
+        4147,
+        0
+       ],
+       [
+        4272,
+        181
+       ],
+       [
+        4397,
+        376
+       ],
+       [
+        4522,
+        445
+       ],
+       [
+        4647,
+        480
+       ],
+       [
+        4772,
+        587
+       ],
+       [
+        4897,
+        593
+       ],
+       [
+        5023,
+        603
+       ],
+       [
+        5147,
+        593
+       ],
+       [
+        5272,
+        613
+       ],
+       [
+        5397,
+        597
+       ],
+       [
+        5522,
+        560
+       ],
+       [
+        5647,
+        616
+       ],
+       [
+        5772,
+        616
+       ],
+       [
+        5897,
+        626
+       ],
+       [
+        6023,
+        611
+       ],
+       [
+        6147,
+        607
+       ],
+       [
+        6278,
+        614
+       ],
+       [
+        6401,
+        585
+       ],
+       [
+        6522,
+        586
+       ],
+       [
+        6647,
+        594
+       ],
+       [
+        6772,
+        588
+       ],
+       [
+        6897,
+        579
+       ],
+       [
+        7021,
+        553
+       ],
+       [
+        7147,
+        529
+       ],
+       [
+        7272,
+        516
+       ],
+       [
+        7397,
+        440
+       ],
+       [
+        7522,
+        336
+       ],
+       [
+        7647,
+        200
+       ],
+       [
+        7772,
+        53
+       ],
+       [
+        7897,
+        30
+       ],
+       [
+        8023,
+        0
+       ],
+       [
+        8147,
+        1
+       ],
+       [
+        8272,
+        31
+       ],
+       [
+        8397,
+        52
+       ],
+       [
+        8522,
+        201
+       ]
+      ]
+     }
+    },
+    "reduce": {
+     "background": {
+      "pixels": 52301,
+      "steps": [
+       [
+        144,
+        0
+       ],
+       [
+        268,
+        0
+       ],
+       [
+        394,
+        0
+       ],
+       [
+        518,
+        0
+       ],
+       [
+        643,
+        0
+       ],
+       [
+        768,
+        0
+       ],
+       [
+        893,
+        0
+       ],
+       [
+        1019,
+        0
+       ],
+       [
+        1144,
+        0
+       ],
+       [
+        1269,
+        0
+       ],
+       [
+        1394,
+        0
+       ],
+       [
+        1519,
+        0
+       ],
+       [
+        1644,
+        0
+       ],
+       [
+        1768,
+        0
+       ],
+       [
+        1893,
+        0
+       ],
+       [
+        2018,
+        0
+       ],
+       [
+        2143,
+        0
+       ],
+       [
+        2268,
+        0
+       ],
+       [
+        2393,
+        0
+       ],
+       [
+        2519,
+        0
+       ],
+       [
+        2643,
+        0
+       ],
+       [
+        2768,
+        0
+       ],
+       [
+        2894,
+        0
+       ],
+       [
+        3019,
+        0
+       ],
+       [
+        3144,
+        0
+       ],
+       [
+        3268,
+        0
+       ],
+       [
+        3393,
+        0
+       ]
+      ]
+     },
+     "title": {
+      "pixels": 627,
+      "steps": [
+       [
+        144,
+        0
+       ],
+       [
+        268,
+        0
+       ],
+       [
+        394,
+        0
+       ],
+       [
+        518,
+        0
+       ],
+       [
+        643,
+        0
+       ],
+       [
+        768,
+        0
+       ],
+       [
+        893,
+        0
+       ],
+       [
+        1019,
+        0
+       ],
+       [
+        1144,
+        0
+       ],
+       [
+        1269,
+        0
+       ],
+       [
+        1394,
+        0
+       ],
+       [
+        1519,
+        0
+       ],
+       [
+        1644,
+        0
+       ],
+       [
+        1768,
+        0
+       ],
+       [
+        1893,
+        0
+       ],
+       [
+        2018,
+        0
+       ],
+       [
+        2143,
+        0
+       ],
+       [
+        2268,
+        0
+       ],
+       [
+        2393,
+        0
+       ],
+       [
+        2519,
+        0
+       ],
+       [
+        2643,
+        0
+       ],
+       [
+        2768,
+        0
+       ],
+       [
+        2894,
+        0
+       ],
+       [
+        3019,
+        0
+       ],
+       [
+        3144,
+        0
+       ],
+       [
+        3268,
+        0
+       ],
+       [
+        3393,
+        0
+       ]
+      ]
+     }
+    },
+    "assets": {
+     "app.css": "5d442c22213b545048fc260254cafc7eee73e3a67f8234ea0e861ab427f86209",
+     "look-home.css": "7a94ccf7951d362c4c35d6312bd30b096400f255f838afe3f8c4f72eb909bb20",
+     "look-calendar.css": "64d586ceef8ba7dad3285aa54b313f8569a1cb567f88e1b3cc218699fe1101f5",
+     "look-order.css": "c39bfcaeedc1c75d3f07dc799ee6dad49b896d41fac4d8b4d409096b834995fe",
+     "look-team.css": "3e40c9e02edf6d6d07890096fd1060a01db486724567cb6de7aee5c4995b0a86",
+     "look-records.css": "2f1e36fb72ca22069854455d39f67a45ea25b7b0c1dc963937c9867388b3a19c",
+     "colour.css": "efba9d4ac618897082acd1f3e2a79d70bf23d1432c172e89593a9d40407d63d9",
+     "swarm.css": "12ee29f0d12215967f7344727b0d8af6fd3af24f4f87ce8e321035b0074c7bad",
+     "icons.js": "af958d0b8fd32168a1d2db3a4450927cf3d20c1fd2eb4d0dc559f4d64820fc1b",
+     "status.js": "ea2b20db35b62d8b21432a95f54fe2b4ce0b8372969d8e6763b515c695a5ee5d",
+     "board.js": "e9f6c686b67852bb6838dbfcaf06a64385cf6ed44f2d03f10d67b6b93cf509ed",
+     "swarm.js": "d4cb9c903f61abd152e9990f31d46dc93779e6f2eb2b2fe200aa9b11754a7538",
+     "app.js": "65154ae4a157922514046652da84532ff24774c237b2207d5b84146bd8a6b7c0"
+    },
+    "runtime": "d777d3bd9270a16a10403aea1cffb5c774ed23d442c3ac8b574df09bca030146"
+   },
+   "parent": "bef233a06d3c1a90858966bcf58bb147dfd8c42e25f576d025e4381e2052747a"
   }
  }
 }
@@ -44268,9 +44418,9 @@ edabc8ce7d7bf61d4ecd36c6af60f1f2b85aa7a8a1e1c16c8e4402dc80f8adb3 tools/quality_b
 299dbc95507d6d081c4b188a7841bdc228a37aec4f193d1de235945087256a77 tools/quality_policy.json
 0bf27d88366d574fe48425f4b2db3b2549de673640d828c898d0f468f64c8e28 tools/quality_v1.sha256
 5d442c22213b545048fc260254cafc7eee73e3a67f8234ea0e861ab427f86209 web/app.css
-5d6d3d98227ce8e48265a22af3b057721b09fe32aba4e26cc149bf4937a83821 web/app.js
+65154ae4a157922514046652da84532ff24774c237b2207d5b84146bd8a6b7c0 web/app.js
 e9f6c686b67852bb6838dbfcaf06a64385cf6ed44f2d03f10d67b6b93cf509ed web/board.js
-325a27a421ac06c684d221cf6613eccd53313490f24bac73dbe552a221458d01 web/colour.css
+efba9d4ac618897082acd1f3e2a79d70bf23d1432c172e89593a9d40407d63d9 web/colour.css
 2219b6976077d91c736e260e16f223f406772bfbf78781923c231f85b1adbcde web/format.mjs
 af958d0b8fd32168a1d2db3a4450927cf3d20c1fd2eb4d0dc559f4d64820fc1b web/icons.js
 24cd16b2f25c7bfbed1a71f67bf467cf8abd02753e0ba7980ed07ff6520941db web/index.html
@@ -44278,8 +44428,8 @@ af958d0b8fd32168a1d2db3a4450927cf3d20c1fd2eb4d0dc559f4d64820fc1b web/icons.js
 7a94ccf7951d362c4c35d6312bd30b096400f255f838afe3f8c4f72eb909bb20 web/look-home.css
 c39bfcaeedc1c75d3f07dc799ee6dad49b896d41fac4d8b4d409096b834995fe web/look-order.css
 2f1e36fb72ca22069854455d39f67a45ea25b7b0c1dc963937c9867388b3a19c web/look-records.css
-30f799e3dbdda8be1c77b7a6c3b65b2ff3e5647a0e4190be057b72713c74dbfb web/look-team.css
-aedb1472b9ea2223499b692aff57e8260670e696602990817d7a1608de672ed8 web/quality-data.json
+3e40c9e02edf6d6d07890096fd1060a01db486724567cb6de7aee5c4995b0a86 web/look-team.css
+81ea3915a6e5a784cbca151a0537bf42543c7f0181f83737cea1cc6de536c638 web/quality-data.json
 83ab9b6af89a09681c1047cdb86531bb3de74b0ba4a7a0db1ef20044371aa871 web/quality.css
 9f6274322ba2642e9eeaebe3751e9dd013e8700f720e73571755f621e9c82db9 web/quality.html
 4dbbba02c54ee09eeed687b4030f8c80ae72e0948b0df2efa1d14a3deb5c6383 web/quality.js
