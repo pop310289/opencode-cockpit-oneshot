@@ -26135,6 +26135,9 @@ import * as F from './format.mjs';
     return paint ? svg('rect', Object.assign(paint, geometry, {'data-mark-width': geometry.width, 'data-mark-height': geometry.height, style: 'fill:var(--seat-' + paint['data-seat-slot'] + ')'})) : null;
   }
   function seatIcon(seat, run, size, square) {
+    if (S.view === 'team' && S.team && run === S.team.run && seat && (seat.actor === S.team.ceo || seat.actor === S.team.judge)) {
+      return workIcon(seat, S.team, square || size || 24);
+    }
     if (graphics) {
       // One colour per seat everywhere: the avatar takes its seat's wash and ink, like the seat's bars and band.
       var face = graphics.avatar(seat.id || seat.actor, seat.name, square || 32), slot = (seatPaint(seat, run) || {})['data-seat-slot'];
@@ -26155,6 +26158,9 @@ import * as F from './format.mjs';
     if (!seat || !(seat.actor || seat.id)) { return icon; }
     var actor = seat.actor || seat.id;
     icon.removeAttribute('aria-hidden');
+    if (S.view === 'team' && S.team && run === S.team.run) {
+      icon.setAttribute('data-work-palette', workPalette(S.team, seat));
+    }
     attrs(icon, {role: 'button', tabindex: 0, 'data-seat-open': actor, 'data-seat-run-id': run,
       'aria-label': 'Open ' + seat.name + ' launches', 'aria-haspopup': 'dialog', title: 'Open ' + seat.name + ' launches'});
     on(icon, 'click', function (ev) { ev.preventDefault(); if (ev.stopPropagation) { ev.stopPropagation(); } openSeatLaunches(seat, run, ev.currentTarget); });
@@ -27124,21 +27130,40 @@ import * as F from './format.mjs';
     return box;
   }
   // The canvas uses actor ids for people and order ids for work. Focus remains independent.
+  function workPalette(doc, seat) {
+    if (!seat) { return 'peach'; }
+    if (seat.actor === doc.ceo) { return 'rose'; }
+    if (seat.actor === doc.judge) { return 'periwinkle'; }
+    if (seat.actor === doc.lead) { return 'lilac'; }
+    var id = String(seat.id || seat.actor || '').replace(/^agent:/, '').toLowerCase();
+    if (id === 'writer') { return 'ice'; }
+    if (id === 'reviewer') { return 'coral'; }
+    // A custom seat keeps its hue through sorting, search and replay.
+    var hues = ['orchid', 'peach', 'ice', 'petal', 'lilac', 'coral', 'periwinkle', 'rose'], hash = 7;
+    for (var i = 0; i < id.length; i++) { hash = (31 * hash + id.charCodeAt(i)) >>> 0; }
+    return hues[hash % hues.length];
+  }
   function workIcon(p, doc, size) {
     var icon = svg('svg', {viewBox: '0 0 40 40', width: size || 28, height: size || 28, 'data-canvas-icon': p.actor || 'order', 'aria-hidden': 'true', 'class': 'work-icon'});
     icon.appendChild(svg('rect', {width: 40, height: 40, rx: 9, fill: 'var(--wash)'}));
-    var path = p.actor === doc.ceo ? 'M14 13 A6 6 0 1 0 12 13 M9 32 C9 20 31 20 31 32' :
-      p.actor === doc.judge ? 'M30 20 A10 10 0 1 1 30 19.9 M14 20 L18 24 L26 15' :
-      p.actor === doc.lead ? 'M16 8 H24 V16 H16 Z M20 16 V23 M10 23 H30 M10 23 V31 M30 23 V31 M6 31 H14 M26 31 H34' :
+    if (p.actor && (p.actor === doc.ceo || p.actor === doc.judge)) {
+      var symbol = activityIcon(p.actor === doc.ceo ? 'You' : 'Judge');
+      icon.appendChild(attrs(symbol, {x: 6, y: 6, width: 28, height: 28}));
+      return seatLaunchControl(icon, p, doc.run);
+    }
+    var path = p.actor === doc.lead ? 'M16 8 H24 V16 H16 Z M20 16 V23 M10 23 H30 M10 23 V31 M30 23 V31 M6 31 H14 M26 31 H34' :
       p.actor ? 'M9 10 H31 V28 H9 Z M14 16 L18 19 L14 22 M21 22 H26 M16 32 H24' :
       'M11 8 H24 L30 14 V32 H11 Z M24 8 V14 H30 M16 20 H25 M16 25 H23';
     icon.appendChild(svg('path', {d: path, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round'})); return p.actor ? seatLaunchControl(icon, p, doc.run) : icon;
   }
   function canonical(doc, actor) { return actor ? person(doc, actor).actor : null; }
-  function workOwner(doc, order) {
+  function workAssignee(doc, order) {
     var launches = doc.launches.filter(function (l) { return l.order === order.id; });
     var actor = launches.length ? launches[launches.length - 1].agent : order.submitter || order.to;
-    return seatFor(doc, actor) || person(doc, doc.lead);
+    return actor && seatFor(doc, actor);
+  }
+  function workOwner(doc, order) {
+    return workAssignee(doc, order) || person(doc, doc.lead);
   }
   function workRows(doc) {
     var asks = {}, holders = {}, submitters = {};
@@ -27191,7 +27216,7 @@ import * as F from './format.mjs';
   function workModel(doc, orders, ledger) {
     orders = orders || S.full; ledger = ledger || S.log;
     var workers = doc.seats.filter(function (s) { return s.actor !== doc.lead; }), width = Math.max(376, (workers.length + 1) * 200 - 24), nodes = [], edges = [];
-    function team(p, x, y, kind) { nodes.push({id: p.actor, name: p.name, p: p, x: x, y: y, w: 176, h: 68, kind: kind}); }
+    function team(p, x, y, kind) { nodes.push({id: p.actor, name: p.name, p: p, palette: workPalette(doc, p), x: x, y: y, w: 176, h: 68, kind: kind}); }
     team(person(doc, doc.ceo), width / 2 - 88, 0, 'person');
     team(person(doc, doc.lead), 0, 96, 'seat');
     team(person(doc, doc.judge), width - 176, 96, 'program');
@@ -27207,8 +27232,8 @@ import * as F from './format.mjs';
     var issued = {}, columns = {};
     ledger.forEach(function (e) { if (e.kind === 'order.issued') { issued[e.body.id] = e.seq; } });
     Object.values(orders).slice().sort(function (a, b) { return (issued[a.id] || 0) - (issued[b.id] || 0); }).forEach(function (o) {
-      var owner = workOwner(doc, o), a = positions[owner.actor] || positions[doc.lead], count = columns[a.id] || 0;
-      var n = {id: o.id, name: o.title || o.id, order: o, p: owner, kind: 'order', x: a.x, y: a.y + a.h + 24 + count * 68, w: 176, h: 44};
+      var assigned = workAssignee(doc, o), owner = assigned || person(doc, doc.lead), a = positions[owner.actor] || positions[doc.lead], count = columns[a.id] || 0;
+      var n = {id: o.id, name: o.title || o.id, order: o, p: owner, palette: workPalette(doc, assigned), kind: 'order', x: a.x, y: a.y + a.h + 24 + count * 68, w: 176, h: 44};
       nodes.push(n); columns[a.id] = count + 1;
       edge(a.id, n.id, 'work', [[a.x, a.y + a.h / 2], [a.x - 16, a.y + a.h / 2], [a.x - 16, n.y + n.h / 2], [n.x, n.y + n.h / 2]]);
     });
@@ -27322,7 +27347,9 @@ import * as F from './format.mjs';
   function canvasTransform() {
     var view = document.querySelector('[data-canvas-view]'), stage = document.querySelector('[data-canvas-stage]');
     if (!view || !stage) { return; }
-    var style = 'width:' + view.getAttribute('data-width') + 'px;height:' + view.getAttribute('data-height') + 'px;transform:translate(' + C.x + 'px,' + C.y + 'px) scale(' + C.scale + ')';
+    // The HTML camera also scales SVG non-scaling strokes. Keep small glyphs legible at Fit.
+    var glyphStroke = Math.min(3, Math.max(1.3, 1 / C.scale));
+    var style = '--map-glyph-stroke:' + glyphStroke + 'px;width:' + view.getAttribute('data-width') + 'px;height:' + view.getAttribute('data-height') + 'px;transform:translate(' + C.x + 'px,' + C.y + 'px) scale(' + C.scale + ')';
     if (view.getAttribute('style') !== style) { view.setAttribute('style', style); }
     var scale = document.querySelector('[data-canvas-scale]'), label = F.count(C.scale * 100) + '%'; if (scale.textContent !== label) { scale.textContent = label; }
     var out = document.querySelector('[data-canvas-zoom="out"]'), inside = document.querySelector('[data-canvas-zoom="in"]');
@@ -27384,7 +27411,7 @@ import * as F from './format.mjs';
       var items = model.nodes.filter(function (n) { return (n.kind === 'order') === group[1]; });
       list.appendChild(h('p', {'class': 'group-heading'}, group[0]));
       items.forEach(function (n) {
-        var b = h('button', {'data-canvas-item': n.id, 'data-name': n.name, 'class': 'quiet', type: 'button', title: n.name, 'aria-pressed': String(C.selected === n.id)},
+        var b = h('button', {'data-canvas-item': n.id, 'data-name': n.name, 'data-work-palette': n.palette, 'class': 'quiet', type: 'button', title: n.name, 'aria-pressed': String(C.selected === n.id)},
           n.kind === 'order' ? workIcon({}, doc, 24) : null, n.kind === 'order' ? h('span', {'class': 'cut-text'}, n.name) : seatChip(n.p, doc.run),
           n.order ? null : h('i', {'class': 'dot', 'data-status': canvasState(n, doc, source).getAttribute('data-state'), 'aria-hidden': 'true'}));
         if (n.order) { b.appendChild(attrs(canvasState(n, doc, source), {'data-canvas-list-state': n.id})); }
@@ -27404,7 +27431,7 @@ import * as F from './format.mjs';
     });
     view.appendChild(wires);
     model.nodes.forEach(function (n) {
-      var node = h('button', {'data-canvas-node': n.id, 'data-kind': n.kind, 'data-seat-tone': seatTone(n.p, doc.run), 'data-name': n.name, 'data-run': n.order ? doc.run : null, 'data-order': n.order ? n.id : null, 'data-replay': source.future[n.id] ? 'future' : null, type: 'button',
+      var node = h('button', {'data-canvas-node': n.id, 'data-kind': n.kind, 'data-work-palette': n.palette, 'data-seat-tone': seatTone(n.p, doc.run), 'data-name': n.name, 'data-run': n.order ? doc.run : null, 'data-order': n.order ? n.id : null, 'data-replay': source.future[n.id] ? 'future' : null, type: 'button',
         'aria-pressed': String(C.selected === n.id), title: n.name + (n.order ? '' : ' / ' + n.p.model), style: 'left:' + n.x + 'px;top:' + n.y + 'px;width:' + n.w + 'px;height:' + n.h + 'px'},
         workIcon(n.order ? {} : n.p, doc, n.order ? 16 : 28), h('strong', {'class': 'cut-text'}, n.name),
         n.order ? null : h('span', {'class': 'hint cut-text', title: n.p.model}, n.p.model), canvasState(n, doc, source));
@@ -27493,8 +27520,9 @@ import * as F from './format.mjs';
       var ruler = h('div', {'class': 'gantt-ruler'});
       [0, 1 / 3, 2 / 3, 1].forEach(function (f) { ruler.appendChild(h('span', {'data-gantt-tick': (end * f).toFixed(1)}, fixedNumber((end * f), 1) + ' s')); }); content.appendChild(ruler);
       Object.keys(groups).forEach(function (actor) {
-        var group = h('div', {'data-gantt-row': actor, 'data-seat-tone': seatTone(person(doc, actor), doc.run), 'data-selected': actor === selected});
-        group.appendChild(attrs(seatChip(person(doc, actor), doc.run), {'data-gantt-label': actor}));
+        var seat = person(doc, actor);
+        var group = h('div', {'data-gantt-row': actor, 'data-work-palette': workPalette(doc, seat), 'data-seat-tone': seatTone(seat, doc.run), 'data-selected': actor === selected});
+        group.appendChild(attrs(seatChip(seat, doc.run), {'data-gantt-label': actor}));
         var lanes = h('div', {'class': 'gantt-lanes'}), track = h('div', {'class': 'gantt-track'});
         lanes.appendChild(h('div', {'class': 'gantt-row'}, track)); group.appendChild(lanes);
         groups[actor].forEach(function (item) {
@@ -27770,7 +27798,7 @@ import * as F from './format.mjs';
     workers.forEach(function (s, i) { nodes.push({p: s, x: 16 + i % 3 * 208, y: 248 + Math.floor(i / 3) * 120, role: 'Does the work', parent: doc.lead}); });
     if (graphics) {
       box.appendChild(graphics.tree(nodes.map(function (n) { return {id: n.p.actor, parent: n.parent, name: n.p.name, node: n}; }), function (entry) {
-        var n = entry.node, card = h('div', Object.assign({'class': 'cp-graph-card'}, focusAttrs(doc, [n.p.actor])),
+        var n = entry.node, card = h('div', Object.assign({'class': 'cp-graph-card', 'data-work-palette': workPalette(doc, n.p)}, focusAttrs(doc, [n.p.actor])),
           h('div', {'class': 'cp-graph-heading'}, seatIcon(n.p, doc.run, 28), h('strong', null, n.p.name)),
           h('span', {'class': 'hint'}, n.role), h('span', {'class': 'hint'}, n.p.model), seatBadge(n.p, doc.launches));
         if (seatFor(doc, n.p.actor)) { var button = h('button', {type: 'button', 'class': 'quiet', 'data-select-seat-hit': n.p.id || n.p.actor, 'aria-label': 'Focus on ' + n.p.name}, 'Focus'); on(button, 'click', function () { selectSeat(n.p.id || n.p.actor); }); card.appendChild(button); }
@@ -27795,10 +27823,11 @@ import * as F from './format.mjs';
     nodes.forEach(function (n) {
       var mine = doc.launches.filter(function (l) { return l.agent === n.p.actor; }), state = seatState(n.p, doc.launches), busy = state === 'Working';
       var label = n.p.name + ' / ' + n.role + ' / ' + n.p.model + ' / ' + state + ' / ' + countText(mine.length, 'launch');
-      var node = svg('g', Object.assign({'data-org-node': n.p.actor, transform: 'translate(' + n.x + ' ' + n.y + ')'}, focusAttrs(doc, [n.p.actor])));
+      var node = svg('g', Object.assign({'data-org-node': n.p.actor, 'data-work-palette': workPalette(doc, n.p), transform: 'translate(' + n.x + ' ' + n.y + ')'}, focusAttrs(doc, [n.p.actor])));
       node.appendChild(svg('title', null, label)); node.appendChild(svg('rect', {width: 176, height: 96, rx: 12, 'class': 'org-box'}));
       var mark = svgSeatMark(n.p, doc.run, {x: 0, y: 16, width: 3, height: 64, rx: 2}); if (mark) { node.appendChild(mark); }
-      var seatGraphic = attrs(seatIcon(n.p, doc.run, 28), {x: 12, y: 12}); node.appendChild(seatGraphic);
+      var isRole = n.p.actor === doc.ceo || n.p.actor === doc.judge;
+      var seatGraphic = attrs(isRole ? workIcon(n.p, doc, 32) : seatIcon(n.p, doc.run, 28), {x: 12, y: 12}); node.appendChild(seatGraphic);
       node.appendChild(svg('text', {x: 52, y: 30, 'class': 'diagram-name', 'data-text-limit': 14, title: n.p.name}, n.p.name));
       node.appendChild(svg('text', {x: 52, y: 48, 'class': 'axis-label'}, n.role));
       node.appendChild(svg('text', {x: 12, y: 62, 'class': 'axis-label', 'data-text-limit': 21, title: n.p.model}, n.p.model));
@@ -27990,7 +28019,7 @@ import * as F from './format.mjs';
         lanes[lane] = x + width + 56;
         bars.push({item: item, x: x, width: width, lane: lane, start: start, end: end});
       });
-      var height = Math.max(32, lanes.length * 24), row = svg('g', Object.assign({'data-timeline-row': actor, 'data-seat-tone': seatTone(p, doc.run), transform: 'translate(0 ' + cursor + ')'}, doc.order ? {} : focusAttrs(doc, [actor])));
+      var height = Math.max(32, lanes.length * 24), row = svg('g', Object.assign({'data-timeline-row': actor, 'data-work-palette': doc.order ? null : workPalette(doc, p), 'data-seat-tone': seatTone(p, doc.run), transform: 'translate(0 ' + cursor + ')'}, doc.order ? {} : focusAttrs(doc, [actor])));
       var mark = svgSeatMark(p, doc.run, {x: 0, y: height / 2 - 12, width: 3, height: 24, rx: 2}); if (mark) { row.appendChild(mark); }
       var label = svg('foreignObject', {x: 8, y: height / 2 - 16, width: axis - 16, height: 32, 'data-timeline-label': actor});
       label.appendChild(seatChip(p, doc.run, '', 28)); row.appendChild(label);
@@ -30060,10 +30089,7 @@ import * as F from './format.mjs';
     document.documentElement.dataset.route = view;
     // Direct links introduce the hero. Moving to the collection inside the workspace is immediate.
     document.documentElement.dataset.heroIntro = document.documentElement.dataset.motion === 'on' && (view === 'home' || (view === 'library' && !parts[1] && navigation === 1)) ? 'play' : 'quiet';
-    var compact = ['home', 'team', 'board', 'status', 'files', 'ledger', 'swarms', 'library'].includes(view);
-    document.documentElement.dataset.layout = compact ? 'responsive' : 'desktop';
-    var viewport = $('page-viewport'), width = compact ? 'width=device-width,initial-scale=1' : 'width=1280';
-    if (viewport.getAttribute('content') !== width) { viewport.setAttribute('content', width); }
+    document.documentElement.dataset.layout = 'responsive';
     document.querySelectorAll('[data-view]').forEach(function (e) { e.hidden = e.getAttribute('data-view') !== view; });
     observeHero();
     var nav = view === 'day' || view === 'order' ? 'calendar' : view;
@@ -30646,34 +30672,42 @@ html:root body {
 }
 
 /* The same recorded state uses the same swatch in the graph, its index and the timeline. */
-:is(.badge, .pill, .dot) {
+:is(.badge, .pill, .dot, .order-dot) {
   --signal-ink: var(--kc-muted-ink);
   --signal-mark: var(--kc-muted-mark);
   --signal-wash: var(--kc-muted-wash);
   --signal-shape: circle(36%);
 }
-:where(.badge, .pill, .dot):is([data-state=ok], [data-state=SUCCEEDED i], [data-state=done], [data-state=accepted], [data-state=recorded], [data-state=issued], [data-status=done]) {
+:where(.badge, .pill, .dot, .order-dot):is([data-state=ok], [data-state=SUCCEEDED i], [data-state=done], [data-state=accepted], [data-state=recorded], [data-state=issued], [data-status=done]) {
   --signal-wash: var(--kc-ok-wash);
   --signal-ink: var(--kc-ok-ink);
   --signal-mark: var(--kc-ok-mark);
   --signal-shape: polygon(0% 55%, 17% 39%, 39% 61%, 83% 12%, 100% 27%, 39% 93%);
 }
-:where(.badge, .pill, .dot):is([data-state=running], [data-state=working], [data-state=LEASED], [data-state=JUDGING], [data-status=running]) {
+:where(.badge, .pill, .dot, .order-dot):is([data-state=running], [data-state=working], [data-state=LEASED], [data-state=JUDGING], [data-status=running]) {
   --signal-wash: var(--kc-run-wash);
   --signal-ink: var(--kc-run-ink);
   --signal-mark: var(--kc-run-mark);
 }
-:where(.badge, .pill, .dot):is([data-state=attention], [data-state=due], [data-state=proposed], [data-status=attention]) {
+:where(.badge, .pill, .dot, .order-dot):is([data-state=attention], [data-state=due], [data-state=proposed], [data-status=attention]) {
   --signal-wash: var(--kc-warn-wash);
   --signal-ink: var(--kc-warn-ink);
   --signal-mark: var(--kc-warn-mark);
   --signal-shape: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
 }
-:where(.badge, .pill, .dot):is([data-state=bad], [data-state=FAILED i], [data-state=DEAD], [data-state=CANCELLED i], [data-state=rejected], [data-state=fatal], [data-state=halted], [data-state=offline], [data-status=failed]) {
+:where(.badge, .pill, .dot, .order-dot):is([data-state=bad], [data-state=FAILED i], [data-state=DEAD], [data-state=CANCELLED i], [data-state=rejected], [data-state=fatal], [data-state=halted], [data-state=offline], [data-status=failed]) {
   --signal-wash: var(--kc-bad-wash);
   --signal-ink: var(--kc-bad-ink);
   --signal-mark: var(--kc-bad-mark);
   --signal-shape: polygon(18% 0%, 50% 32%, 82% 0%, 100% 18%, 68% 50%, 100% 82%, 82% 100%, 50% 68%, 18% 100%, 0% 82%, 32% 50%, 0% 18%);
+}
+
+html .order-dot .flow-dot { fill:var(--signal-mark); }
+
+/* Keep a continuous ink stroke at the rendered 16px size of summary icons. */
+:root body :is([data-view=board],[data-view=files],[data-view=ledger],[data-view=library],[data-view=status],[data-view=order],[data-view=calendar],[data-view=day]) [data-card-icon] svg > path {
+  vector-effect:non-scaling-stroke;
+  stroke-width:1.5px;
 }
 
 /* Stat cards already frame their figures, so their inset status labels use a lighter rim. */
@@ -31133,7 +31167,7 @@ cat > 'web/index.html' <<'OC_EOF_94'
 <html lang="en" data-motion="on">
 <head>
 <meta charset="UTF-8">
-<meta content="width=1280" name="viewport" id="page-viewport">
+<meta content="width=device-width,initial-scale=1" name="viewport" id="page-viewport">
 <meta content="only light" name="color-scheme">
 <title>OpenCode Cockpit</title>
 <link href="data:," rel="icon">
@@ -31436,6 +31470,55 @@ cat > 'web/look-calendar.css' <<'OC_EOF_95'
 :root[data-motion=on] body :is([data-view=calendar], [data-view=day]) [data-enter=card]{animation:lc-arrive 200ms ease both;}
 :root body :is([data-view=calendar], [data-view=day]) .cp-motion-layer{transform:none !important;}
 :root[data-motion=reduce] body :is([data-view=calendar], [data-view=day]) :is([data-enter], .cp-graph-status, .cp-motion-layer){animation:none;}
+
+@media (max-width:760px) {
+  html[data-route=calendar] body:has([data-view=calendar]:not([hidden])) {
+    grid-template-columns:var(--sw-phone-track);
+  }
+  html[data-route=calendar] body .workspace { margin-inline:0; padding:12px; }
+  html[data-route=calendar] [data-view=calendar] .page-head { flex-wrap:wrap; }
+  html[data-route=calendar] body [data-view=calendar] :is(.calendar-layout,#calendar-stats) {
+    grid-template-columns:var(--sw-phone-track);
+  }
+  html[data-route=calendar] body [data-view=calendar] #calendar-stats .stat {
+    grid-template-columns:var(--track) 20px 68px;
+  }
+  html[data-route=calendar] [data-view=calendar] :is(#weekdays,#calendar-grid) {
+    grid-template-columns:repeat(7,var(--sw-phone-track));
+  }
+  html[data-route=calendar] [data-view=calendar] :is([data-weekday],.day-cell) { padding-inline:2px; }
+  html[data-route=calendar] [data-view=calendar] .day-cell {
+    grid-template-columns:var(--sw-phone-track);
+    overflow-wrap:anywhere;
+  }
+  html[data-route=calendar] [data-view=calendar] .day-cell .dots {
+    grid-column:1;
+    grid-row:auto;
+    flex-wrap:wrap;
+  }
+  html[data-route=calendar] [data-view=calendar] .day-status .badge {
+    white-space:normal;
+    padding-inline:2px;
+  }
+}
+
+@media (max-width: 760px) {
+  html[data-route=day] body:has([data-view=day]:not([hidden])) { grid-template: none / var(--track); }
+  html[data-route=day] body .workspace { margin-inline:0; padding:12px; }
+  html[data-route=day] #day-stats{grid-template-columns:repeat(2,var(--track)); }
+  html[data-route=day] [data-view=day] #day-stats .stat {
+    display:flex; flex-direction:column; align-items:flex-start; gap:4px;
+  }
+  html[data-route=day] #day-nav, html[data-route=day] main .page-head { flex-wrap:wrap; }
+  html[data-route=day] main [data-view=day] .two-col { grid-template-columns:var(--track); }
+  html[data-route=day] #day-diary .ledger li {
+    grid-template-columns:3ch var(--track);
+    overflow-wrap:anywhere;
+    min-inline-size:0;
+    inline-size:auto;
+  }
+  html[data-route=day] #day-diary .ledger .what { grid-column:1 / -1; }
+}
 OC_EOF_95
 cat > 'web/look-home.css' <<'OC_EOF_96'
 /* Home: ui-foundation's ink, surface, spacing and interaction hierarchy.
@@ -31886,7 +31969,7 @@ cat > 'web/look-order.css' <<'OC_EOF_97'
 /* Small factual graphics stay beside fixed-width, tabular numbers. */
 :root body [data-view]:is([data-view=order], [data-view=status]) :is(.stat, .run-tile){align-content:start; display:grid; gap:6px var(--space-2); grid-template-columns:var(--track) 22px;}
 :root body [data-view]:is([data-view=order], [data-view=status]) :is(.stat-label, .run-tile > .hint){color:var(--lo-secondary); font-size:9pt; grid-column:1; grid-row:1;}
-:root body [data-view]:is([data-view=order], [data-view=status]) :is(.stat > [data-card-icon], .run-tile > .glyph){align-self:center; background:#0000; border-radius:0; color:var(--lo-faint); grid-column:2; grid-row:2; height:18px; padding:0; width:18px;}
+:root body [data-view]:is([data-view=order], [data-view=status]) :is(.stat > [data-card-icon], .run-tile > .glyph){align-self:center; background:#0000; border-radius:0; color:var(--lo-body); grid-column:2; grid-row:2; height:18px; padding:0; width:18px;}
 :root body [data-view]:is([data-view=order], [data-view=status]) :is(.stat strong, .run-tile strong){color:var(--lo-ink); font-size:16.5pt; font-weight:var(--weight-medium); grid-column:1; grid-row:2; letter-spacing:-.01em; line-height:21pt; margin:0; min-width:5ch;}
 :root body [data-view][data-view=order] .run-tile strong{justify-self:start;}
 :root body [data-view][data-view=order] .run-tile > .hint{max-width:none; padding-right:0;}
@@ -31964,11 +32047,13 @@ cat > 'web/look-order.css' <<'OC_EOF_97'
 :root body [data-view][data-view=order] :is(.progress-track, .step-track, .thin-track){border-radius:2px; height:var(--space-1);}
 :root body [data-view][data-view=order] :is([data-progress-fill], [data-meter-fill]){transition:200ms var(--ease) width;}
 
+/* Solid and dashed relationship keys have to read at their 24px legend size. */
+html[data-route=order] .flow-legend path { stroke:var(--kc-run-ink); }
 /* Empty, loading and unavailable are full layouts, with the existing next step. */
 :root body [data-view]:is([data-view=order], [data-view=status]) .empty{align-items:center; background:var(--well); border-radius:var(--space-2); display:flex; flex-direction:column; gap:var(--space-2); justify-content:center; min-height:160px; padding:var(--space-5) var(--space-4); text-align:center;}
 :root body [data-view]:is([data-view=order], [data-view=status]) .empty svg.empty-art{background:var(--wash); border-radius:var(--space-2); color:var(--lo-secondary); flex:0 0 42px; height:42px; width:42px;}
 :root body [data-view]:is([data-view=order], [data-view=status]) .empty .empty-tone{fill:rgb(0 0 0 / .06) !important; stroke:var(--lo-faint);}
-:root body [data-view]:is([data-view=order], [data-view=status]) .empty .empty-detail{stroke:var(--lo-secondary);}
+:root body [data-view]:is([data-view=order], [data-view=status]) .empty .empty-detail{stroke:var(--lo-body); stroke-width:3px;}
 :root body [data-view]:is([data-view=order], [data-view=status]) .empty-art > ellipse{fill:rgb(0 0 0 / .04); filter:none;}
 :root body [data-view]:is([data-view=order], [data-view=status]) .empty strong{font-size:10.125pt; font-weight:var(--weight-medium); line-height:15pt;}
 :root body [data-view]:is([data-view=order], [data-view=status]) .empty p{font-size:9pt; line-height:15pt; margin:var(--space-1) 0 0; max-width:56ch;}
@@ -32023,6 +32108,32 @@ cat > 'web/look-order.css' <<'OC_EOF_97'
 :root body [data-view][data-view=order] .file{gap:var(--space-2) var(--space-3); grid-template-columns:minmax(0, 1.5fr) 0 var(--track) 96px max-content;}
 :root body [data-view][data-view=order] .file-actions{grid-column:1 / -1; justify-content:end;}
 :root body [data-view][data-view=order] [data-keep-edit]:not([open]){flex-basis:auto; margin-right:auto;}
+
+@media (max-width: 760px) {
+  html[data-route=help] :is(#examples,#help-context .order) { grid-template-columns:var(--track); }
+  html[data-route=help] #help-context .order > * { grid-area:auto; min-inline-size:0; }
+  html[data-route=help] #help-stats{grid-template-columns:repeat(2,var(--track)); }
+  html[data-route=help] #help-stats .stat { display:flex; flex-direction:column; align-items:flex-start; gap:4px; }
+  html[data-route=help] .shortcut-list { grid-template-columns:4em var(--track); }
+  html[data-route=order] #order-detail,
+  html[data-route=order] #order-detail :is(.order-facts-row,.order-execution,.order-library-row,.launch-cards,.team) {
+    grid-template-columns:var(--track);
+  }
+  html[data-route=order] #order-detail :is(.page-head,.page-head>div,.order-metrics,.actions,.order-step-caption) {
+    flex-wrap:wrap;
+    min-inline-size:0;
+    max-inline-size:100%;
+  }
+  html[data-route=order] #order-detail .page-head > div{grid-template-columns:var(--track); }
+  html[data-route=order] #order-detail .run-tiles { display:flex; flex-wrap:wrap; }
+  html[data-route=order] #order-detail .run-tile { flex:1 0 calc(50% - 8px); }
+  html[data-route=order] #order-detail .run-tile > .hint { max-inline-size:none; }
+  html[data-route=order] #order-detail .card { min-inline-size:0; overflow-wrap:anywhere; }
+  html[data-route=order] #order-detail :is(.scroll,[data-timeline]) { max-inline-size:100%; overflow-x:auto; }
+  html[data-route=order] #order-detail .launch-timeline { min-inline-size:780px; }
+  html[data-route=order] #order-detail .file { grid-template-columns:repeat(2,var(--track)); }
+  html[data-route=order] #order-detail .file > button.link { grid-column:1 / -1; }
+}
 OC_EOF_97
 cat > 'web/look-records.css' <<'OC_EOF_98'
 /* Records: ui-foundation design core, including its density and restraint rules.
@@ -32052,7 +32163,7 @@ cat > 'web/look-records.css' <<'OC_EOF_98'
 :root body main :is([data-view=files], [data-view=ledger], [data-view=library], [data-view=board]) :is(.actions, .block-head, .library-meta){gap:var(--space-2);}
 :root body main :is([data-view=files], [data-view=ledger], [data-view=library], [data-view=board]) .block-head{margin-bottom:var(--space-2);}
 :root body main :is([data-view=files], [data-view=ledger], [data-view=library], [data-view=board]) :is(.glyph, .activity-icon){color:var(--ink-3); stroke-width:1.9;}
-:root body main :is([data-view=files], [data-view=ledger], [data-view=library], [data-view=board]) [data-card-icon]{background:var(--well); border-radius:7px; box-shadow:none; color:var(--ink-3); height:28px; margin:0; width:28px;}
+:root body main :is([data-view=files], [data-view=ledger], [data-view=library], [data-view=board]) [data-card-icon]{background:var(--well); border-radius:7px; box-shadow:none; color:var(--ink-2); height:28px; margin:0; width:28px;}
 :root body main :is([data-view=files], [data-view=ledger], [data-view=library], [data-view=board]) [data-card-icon] .glyph{height:var(--space-4); width:var(--space-4);}
 :root body main :is([data-view=files], [data-view=ledger], [data-view=library], [data-view=board]) .card-heading{gap:6px;}
 
@@ -32533,8 +32644,8 @@ cat > 'web/look-team.css' <<'OC_EOF_99'
 :root body [data-view=team] [data-team-stats] [data-stat-note]{grid-column:1 / -1; grid-row:3; margin:0;}
 :root body [data-view=team] [data-team-stats] .stat-chart{align-self:center; grid-column:1 / -1; grid-row:4; margin:0;}
 :root body [data-view=team] [data-team-stats] .stat-series{height:var(--space-4);}
-:root body [data-view=team] [data-card-icon]{background:var(--well); border-radius:7px; box-shadow:none; color:var(--team-secondary); height:28px; width:28px;}
-:root body [data-view=team] [data-card-icon] > svg{height:var(--space-4); width:var(--space-4);}
+:root body [data-view=team] [data-card-icon]{background:var(--well); border-radius:7px; box-shadow:none; color:var(--team-body); height:28px; width:28px;}
+:root body [data-view=team] [data-card-icon] > svg{height:var(--space-4); width:var(--space-4); stroke-width:2;}
 :root body [data-view=team] :is(.glyph, .activity-icon){color:var(--team-secondary); stroke-width:1.9;}
 :root body [data-view=team] :is(.usage-track, .usage-track > span, .stat-chart, .progress-track, .step-track){border-radius:2px;}
 :root body [data-view=team] :is(.spark-line, .stat-series-line){stroke-width:1.5; stroke-linecap:round; vector-effect:non-scaling-stroke;}
@@ -32658,6 +32769,9 @@ cat > 'web/look-team.css' <<'OC_EOF_99'
 :root body:has([data-view=team]:not([hidden])) #seat-drawer :is(.hint, time){color:var(--team-secondary); font-size:9pt; line-height:12pt;}
 :root body:has([data-view=team]:not([hidden])) #seat-drawer .preview-head{background:var(--well); border:0; box-shadow:inset 0 -.5px var(--line); padding:var(--space-4);}
 :root body:has([data-view=team]:not([hidden])) #seat-drawer-content{padding:var(--space-4);}
+html[data-route=team] :is(#seat-drawer,#canvas-tab-content) .empty-detail { stroke: #665b78; stroke-opacity: 1; }
+#canvas-tab-content .empty-art .empty-detail { stroke-width:1.65px; vector-effect:non-scaling-stroke; }
+html[data-route=team] #seat-drawer .empty-tone { stroke: #746783; stroke-opacity: .9; }
 :root body:has([data-view=team]:not([hidden])) #seat-drawer button{background:var(--paper); border:0; border-radius:6px; box-shadow:var(--lift-1); color:var(--team-body); font-size:10.125pt; font-weight:normal; min-height:28px; padding:var(--space-1) 10px; transition:0.14s ease box-shadow;}
 :root body:has([data-view=team]:not([hidden])) #seat-drawer button:hover:enabled{background:var(--paper); box-shadow:var(--lift-2); transform:none;}
 
@@ -32673,20 +32787,15 @@ cat > 'web/look-team.css' <<'OC_EOF_99'
 :root[data-motion=reduce] body [data-view=team] *,
 :root[data-motion=reduce] body [data-view=team] *::before,
 :root[data-motion=reduce] body [data-view=team] *::after{animation:none !important; transition:none !important;}
-/* A cool plotting surface separates the white cards from the path network.
-   The blue rim always identifies the selection, while a short seat stripe
-   matches its lane below. Zoom only transforms the inner graph. */
+/* The canvas and timeline use white paper. Role color identifies the inked marks. */
 #team-canvas-slot {
-  --canvas-ground:#f1f4f9;
-  --canvas-line:#d9e1eb;
+  --canvas-ground:var(--paper);
+  --canvas-line:#dde0e5;
   --canvas-subtle:#526278;
-  --canvas-current:var(--kc-run-ink);
-  --canvas-tint:var(--kc-run-wash);
+  --canvas-current:#515e73;
   --panel-edge:solid 1px var(--canvas-line);
   --panel-rule:0 0 0 1px var(--canvas-line) inset;
   --focus-rim:solid 2px var(--canvas-current);
-  --selected-paper:color-mix(in srgb, var(--canvas-tint) 28%, var(--paper));
-  --selected-lane:color-mix(in srgb, var(--canvas-tint) 59%, var(--paper));
   --halo:color-mix(in srgb, var(--canvas-current) 18%, transparent);
   --node-motion:140ms ease;
 }
@@ -32706,7 +32815,7 @@ cat > 'web/look-team.css' <<'OC_EOF_99'
   border-radius:13px;
 }
 #team-canvas-slot [data-canvas-search] {
-  background:#f7f9fc;
+  background:var(--paper);
   box-shadow:var(--panel-rule);
 }
 #team-canvas-slot [data-canvas-search]:focus-visible {
@@ -32728,7 +32837,7 @@ cat > 'web/look-team.css' <<'OC_EOF_99'
   min-block-size:33px;
 }
 #team-canvas-slot button[data-canvas-item][aria-pressed=true] {
-  background:var(--canvas-tint);
+  background:var(--paper);
   box-shadow:inset 3px 0 var(--canvas-current);
 }
 #team-canvas-slot [data-canvas-item]:has([data-canvas-list-state]) {
@@ -32748,17 +32857,17 @@ cat > 'web/look-team.css' <<'OC_EOF_99'
   font-weight:550;
 }
 #team-canvas-slot [data-canvas-stage] {
-  background:radial-gradient(#cdd7e6 .8px, #0000 1px) 0 0 / 18px 18px var(--canvas-ground);
+  background:var(--canvas-ground);
   border-radius:13px;
   box-shadow:var(--panel-rule);
 }
 #team-canvas-slot :is(.canvas-wires, .canvas-rings) { --edge: #96acc9; }
 #team-canvas-slot [data-linked] { --edge: var(--canvas-current); }
 #team-canvas-slot button[data-canvas-node] {
-  border:1px solid #c3cddd;
+  border:1px solid var(--canvas-line);
   border-radius:11px;
   background:var(--paper);
-  box-shadow:0 2px 3px #283a5920, 0 6px 13px -7px #253e6b33;
+  box-shadow:0 1px 3px #20263212, 0 4px 9px -5px #20263220;
   grid-template-rows:17px 15px 18px;
   align-content:center;
   padding-inline:9px 7px;
@@ -32775,16 +32884,6 @@ cat > 'web/look-team.css' <<'OC_EOF_99'
   color:var(--canvas-subtle);
   line-height:14px;
 }
-#team-canvas-slot button[data-canvas-node][data-kind=seat]::after {
-  content:"";
-  position:absolute;
-  inset-inline-start:0;
-  inset-block-start:12px;
-  inline-size:3px;
-  block-size:18px;
-  border-radius:0 2px 2px 0;
-  background:var(--seat-accent, var(--canvas-line));
-}
 #team-canvas-slot button[data-canvas-node][data-kind=order] {
   grid-template-rows:16px 18px;
   border-radius:8px;
@@ -32796,11 +32895,19 @@ cat > 'web/look-team.css' <<'OC_EOF_99'
   line-height:var(--leading-xs);
 }
 #team-canvas-slot [data-canvas-node][data-replay=future] { border-style: dashed; }
-#team-canvas-slot [data-canvas-node][data-search-dim] { opacity: .54; }
+#team-canvas-slot [data-canvas-node][data-search-dim] {
+  border-color: var(--canvas-line);
+  box-shadow: none;
+}
+#team-canvas-slot [data-canvas-node][data-search-dim] > strong { color: var(--canvas-subtle); }
+#team-canvas-slot [data-canvas-node]:is([data-search-dim], [data-replay=future]) .work-icon {
+  filter: saturate(.25);
+  opacity: 1;
+}
 #team-canvas-slot button[data-canvas-node]:hover { border-color: #809abc; }
 #team-canvas-slot button[data-canvas-node][aria-pressed=true] {
   border-color:var(--canvas-current);
-  background:var(--selected-paper);
+  background:var(--paper);
   box-shadow:0 0 0 2px var(--halo),
               0 6px 14px -5px #304f7a44;
 }
@@ -32810,12 +32917,48 @@ cat > 'web/look-team.css' <<'OC_EOF_99'
 }
 #team-canvas-slot .canvas-tools {
   border:var(--panel-edge);
+  background:var(--paper);
   border-radius:11px;
   box-shadow:0 3px 8px -3px #203b6030;
 }
-#team-canvas-slot .work-icon > rect { fill: var(--canvas-ground); }
+/* The team map uses the same sampled wash for an actor, their orders and their timeline. */
+:root body [data-view=team] [data-work-palette=rose]       { --work-wash: #efbfca; --work-ink: #7e3555; }
+:root body [data-view=team] [data-work-palette=periwinkle] { --work-wash: #c4c7ff; --work-ink: #414a89; }
+:root body [data-view=team] [data-work-palette=lilac]      { --work-wash: #ddceff; --work-ink: #60409a; }
+:root body [data-view=team] [data-work-palette=ice]        { --work-wash: #d1e2ff; --work-ink: #325b94; }
+:root body [data-view=team] [data-work-palette=coral]      { --work-wash: #ffb9b4; --work-ink: #883f41; }
+:root body [data-view=team] [data-work-palette=orchid]     { --work-wash: #e4a9cd; --work-ink: #713257; }
+:root body [data-view=team] [data-work-palette=peach]      { --work-wash: #fcc8b5; --work-ink: #864b32; }
+:root body [data-view=team] [data-work-palette=petal]      { --work-wash: #fcd4ff; --work-ink: #76407f; }
+
+:root body [data-view=team] :is(.work-icon[data-work-palette], [data-work-palette] .work-icon, [data-work-palette] .activity-icon) {
+  color: var(--work-ink);
+}
+:root body [data-view=team] .work-icon > rect {
+  fill: var(--work-wash, var(--wash));
+}
+:root body [data-view=team] [data-work-palette] .work-icon > path {
+  stroke-width: var(--map-glyph-stroke, 1.3px);
+  vector-effect:non-scaling-stroke;
+}
+:root body [data-view=team] [data-work-palette] :is(.seat-icon > [data-seat-wash], .cp-graph-avatar-wash) {
+  fill: var(--work-wash) !important;
+  stroke: none;
+}
+:root body [data-view=team] [data-work-palette] .logo path { fill: var(--work-ink); }
+:root body [data-view=team] [data-work-palette] :is(.cp-graph-initials, .cp-graph-anonymous) {
+  fill: var(--work-ink) !important;
+}
+
+:root body [data-view=team] [data-work-palette] .timeline-bar { fill:var(--work-wash); }
+:root body [data-view=team] [data-work-palette] [data-timeline-duration] { fill:var(--work-ink); }
+:root body [data-view=team] [data-timeline-row][data-work-palette] > [data-seat-colour],
+:root body [data-view=team] [data-org-node][data-work-palette] .org-ink > [data-seat-colour] {
+  fill: var(--work-ink) !important;
+}
+
 #team-canvas-slot .replay-bar {
-  background:#f6f8fb;
+  background:var(--paper);
   box-shadow:var(--panel-rule);
 }
 #team-canvas-slot [data-replay-range] { accent-color: var(--canvas-current); }
@@ -32839,7 +32982,7 @@ cat > 'web/look-team.css' <<'OC_EOF_99'
   --track-gap:8px;
   --ruler-offset:calc(var(--name-column) + var(--track-gap));
   padding:6px var(--track-inset) 8px;
-  background:#f7f9fc;
+  background:var(--paper);
   border-radius:0 0 11px 11px;
 }
 #team-canvas-slot .gantt-ruler {
@@ -32857,7 +33000,7 @@ cat > 'web/look-team.css' <<'OC_EOF_99'
   box-shadow:inset 0 -1px #e9edf3;
 }
 #team-canvas-slot [data-gantt-row][data-selected] {
-  background:var(--selected-lane);
+  background:var(--paper);
   box-shadow:inset 3px 0 var(--canvas-current), inset 0 -1px var(--canvas-line);
 }
 #team-canvas-slot [data-gantt-label] {
@@ -32873,21 +33016,20 @@ cat > 'web/look-team.css' <<'OC_EOF_99'
 #team-canvas-slot [data-gantt-bar] {
   block-size:var(--space-3);
   border-radius:4px;
-  background:var(--seat-accent, var(--canvas-subtle));
-  --bar-edge:color-mix(in srgb, var(--seat-ink) 35%, transparent);
+  background:var(--work-wash);
+  --bar-edge:color-mix(in srgb, var(--work-ink) 40%, transparent);
   box-shadow:0 0 0 1px var(--bar-edge) inset;
 }
 #team-canvas-slot [data-gantt-bar]::after {
-  inline-size:4px;
+  inline-size:2px;
   border-radius:0 3px 3px 0;
-  box-shadow:-1px 0 var(--paper);
 }
 #team-canvas-slot [data-gantt-bar][data-tone=done]::after { background: var(--kc-ok-mark); }
 #team-canvas-slot [data-gantt-bar][data-tone=failed]::after { background: var(--kc-bad-mark); }
 #team-canvas-slot [data-gantt-bar][data-tone=running]::after { background: var(--kc-run-mark); }
 #team-canvas-slot .gantt-duration {
   background:none;
-  color:var(--canvas-subtle);
+  color:var(--work-ink);
   font-size:var(--text-micro);
   font-variant-numeric:var(--number-style);
   top:23px;
@@ -32981,7 +33123,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
  "criteria_sha256": "44159b4742b475ce35c3c9ed8dc29df84f33592cf52da9556bde4a5137704c6c",
  "instruments_sha256": "849c6dcfac1405f55e87137179065f43c804b5cd63d86a8cdf5118cbcb0de311",
  "fixture": "release-review-v1",
- "measured_at": "2026-11-24T14:10:50+00:00",
+ "measured_at": "2026-11-24T14:54:20+00:00",
  "versions": [
   {
    "id": "paid",
@@ -32995,9 +33137,9 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "id": "gpt",
    "name": "GPT-6.2",
    "color": "#005ea8",
-   "revision": "Runtime 060acf4fcee7",
-   "runtime_sha256": "060acf4fcee7d4988db39d60e8b7ed3bd47a91724e203f04b865229e799d7fae",
-   "captured": "2026-11-24T14:10:50+00:00"
+   "revision": "Runtime 7019c4912bc7",
+   "runtime_sha256": "7019c4912bc7d47d8faba963f1cccaadcdba8deba0c0dca7d4650e03555411a9",
+   "captured": "2026-11-24T14:54:20+00:00"
   },
   {
    "id": "mine",
@@ -33190,8 +33332,8 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
     "gpt": {
      "total": 8,
      "measured": 8,
-     "passed": 7,
-     "score": 0.9375
+     "passed": 8,
+     "score": 1.0
     },
     "mine": {
      "total": 8,
@@ -33215,7 +33357,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "total": 8,
      "measured": 8,
      "passed": 6,
-     "score": 0.9320916552042704
+     "score": 0.9315478021656484
     },
     "mine": {
      "total": 8,
@@ -34520,7 +34662,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "passed": true,
      "score": 1,
      "evidence": {
-      "revision": "0af8cbd09a23cbc8a6e66828dec8e562a72ad90a",
+      "revision": "d5d256611c125c583c2331b3126425fa86a2e1e1",
       "scanner": "privacy_scan",
       "scope": "reachable history"
      }
@@ -36414,16 +36556,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 1,
-     "passed": false,
-     "score": 0.5,
+     "value": 2,
+     "passed": true,
+     "score": 1,
      "evidence": {
       "fits": true,
-      "natural": false,
-      "viewport": 1280,
-      "width": 1280,
-      "device": false,
-      "scale": 0.3046875
+      "natural": true,
+      "viewport": 390,
+      "width": 390,
+      "device": true,
+      "scale": 1
      }
     },
     "mine": {
@@ -36668,16 +36810,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 49.09999990463257,
+     "value": 71.59999990463257,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       49.09999990463257,
-       51.09999990463257,
-       48.0,
-       49.09999990463257,
-       45.200000286102295
+       71.59999990463257,
+       77.40000009536743,
+       47.90000009536743,
+       81.10000038146973,
+       48.200000286102295
       ],
       "aggregate": "median",
       "cold": true
@@ -36728,16 +36870,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 28.0,
+     "value": 32.0,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       24.0,
+       40.0,
        28.0,
        28.0,
-       28.0,
-       28.0
+       32.0,
+       32.0
       ],
       "aggregate": "median",
       "cold": true
@@ -36788,16 +36930,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 880.978515625,
+     "value": 888.775390625,
      "passed": false,
-     "score": 0.6512396676199776,
+     "score": 0.6468887329101562,
      "evidence": {
       "samples": [
-       880.978515625,
-       880.978515625,
-       880.978515625,
-       880.978515625,
-       880.978515625
+       888.775390625,
+       888.775390625,
+       888.775390625,
+       888.775390625,
+       888.775390625
       ],
       "aggregate": "median",
       "cold": true
@@ -36901,16 +37043,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "reason": "No rendered link to a supported order detail API"
     },
     "gpt": {
-     "value": 67.40000009536743,
+     "value": 62.799999713897705,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       71.90000009536743,
-       66.80000019073486,
-       83,
-       67.40000009536743,
-       65.5
+       78.59999990463257,
+       62,
+       76.5,
+       62.799999713897705,
+       61.80000019073486
       ],
       "aggregate": "median"
      }
@@ -36952,16 +37094,16 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      "reason": "No rendered link to a supported order detail API"
     },
     "gpt": {
-     "value": 83,
+     "value": 78.59999990463257,
      "passed": true,
      "score": 1,
      "evidence": {
       "samples": [
-       71.90000009536743,
-       66.80000019073486,
-       83,
-       67.40000009536743,
-       65.5
+       78.59999990463257,
+       62,
+       76.5,
+       62.799999713897705,
+       61.80000019073486
       ],
       "aggregate": "maximum"
      }
@@ -37005,12 +37147,12 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 31.340771118297756,
+     "value": 31.34075787019632,
      "passed": false,
-     "score": 0.8054935740141854,
+     "score": 0.8054936844150308,
      "evidence": {
-      "seconds": 12.002200000286102,
-      "bytes": 385186,
+      "seconds": 12.001800000190736,
+      "bytes": 385173,
       "requests": 13,
       "repeat": true
      }
@@ -37050,12 +37192,12 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
      }
     },
     "gpt": {
-     "value": 1.0831347586017657,
+     "value": 1.0831708576874637,
      "passed": true,
      "score": 1,
      "evidence": {
-      "seconds": 12.002200000286102,
-      "bytes": 385186,
+      "seconds": 12.001800000190736,
+      "bytes": 385173,
       "requests": 13,
       "repeat": true
      }
@@ -39640,13 +39782,12 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
  "evolution": {
   "slot": "gpt",
   "improved": [
-   "visual.tone",
-   "mobile.status"
+   "mobile.calendar"
   ],
   "regressed": [],
   "passed": true,
-  "previous_revision": "Runtime aad33babe457",
-  "previous_report_sha256": "112f847bfae85eb59f825775f78c1ac7c6a64fb1b9f3b7c9eb25d999dd9dc563",
+  "previous_revision": "Runtime 060acf4fcee7",
+  "previous_report_sha256": "64e3226b9f50552689156f32f97b18cb0ec0d8b9b4cfcd025ffd8226e744fd3e",
   "previous_values": {
    "correct.tests": 1.0,
    "correct.invariants": 13,
@@ -39685,7 +39826,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "visual.tiers": 1,
    "visual.hues": 0,
    "visual.hard": 0.011999999999999997,
-   "visual.tone": 0.020999999999999998,
+   "visual.tone": 0.019999999999999997,
    "visual.type": 6,
    "visual.density": 48.6111111111111,
    "feature.lanes": 5,
@@ -39708,18 +39849,18 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "mobile.board": 2,
    "mobile.team": 2,
    "mobile.calendar": 1,
-   "mobile.status": 1,
+   "mobile.status": 2,
    "mobile.files": 2,
    "mobile.ledger": 2,
    "mobile.swarms": 2,
-   "speed.home": 48.5,
+   "speed.home": 49.09999990463257,
    "speed.paint": 28.0,
-   "speed.bytes": 869.775390625,
+   "speed.bytes": 880.978515625,
    "speed.requests": 17.0,
-   "speed.order": 65.59999990463257,
-   "speed.tail": 78.5,
-   "speed.pollbytes": 31.356337908857554,
-   "speed.pollrate": 1.0832340368885607,
+   "speed.order": 67.40000009536743,
+   "speed.tail": 83,
+   "speed.pollbytes": 31.340771118297756,
+   "speed.pollrate": 1.0831347586017657,
    "robust.offline": 1,
    "robust.stale": 1,
    "robust.overlap": 1,
@@ -39746,7 +39887,7 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
    "verify.hash": 1,
    "verify.raw": 1
   },
-  "previous_runtime_sha256": "aad33babe4579d85fee15ba897ff69b2626b0b74e67f3c048499ee66f3852fd9",
+  "previous_runtime_sha256": "060acf4fcee7d4988db39d60e8b7ed3bd47a91724e203f04b865229e799d7fae",
   "motion": {
    "instrument": {
     "capture": "42ecf3865b6ae96368e3a7761c34104daa7d9145ff818be5459532d2c8c99f8f",
@@ -40502,808 +40643,6 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
     }
    },
    "before": {
-    "normal": {
-     "background": {
-      "pixels": 50669,
-      "steps": [
-       [
-        148,
-        13421
-       ],
-       [
-        273,
-        17807
-       ],
-       [
-        399,
-        17964
-       ],
-       [
-        524,
-        18896
-       ],
-       [
-        649,
-        20387
-       ],
-       [
-        773,
-        26421
-       ],
-       [
-        898,
-        36263
-       ],
-       [
-        1024,
-        39425
-       ],
-       [
-        1149,
-        37937
-       ],
-       [
-        1273,
-        34174
-       ],
-       [
-        1399,
-        31139
-       ],
-       [
-        1523,
-        25570
-       ],
-       [
-        1649,
-        18512
-       ],
-       [
-        1773,
-        14954
-       ],
-       [
-        1898,
-        33305
-       ],
-       [
-        2023,
-        38519
-       ],
-       [
-        2148,
-        39728
-       ],
-       [
-        2273,
-        40927
-       ],
-       [
-        2398,
-        41429
-       ],
-       [
-        2523,
-        42366
-       ],
-       [
-        2649,
-        41426
-       ],
-       [
-        2774,
-        28152
-       ],
-       [
-        2899,
-        8527
-       ],
-       [
-        3024,
-        1371
-       ],
-       [
-        3149,
-        254
-       ],
-       [
-        3274,
-        1888
-       ],
-       [
-        3398,
-        16025
-       ],
-       [
-        3524,
-        35798
-       ],
-       [
-        3648,
-        42525
-       ],
-       [
-        3774,
-        41529
-       ],
-       [
-        3899,
-        40902
-       ],
-       [
-        4024,
-        40353
-       ],
-       [
-        4148,
-        36353
-       ],
-       [
-        4273,
-        27203
-       ],
-       [
-        4398,
-        4659
-       ],
-       [
-        4523,
-        2
-       ],
-       [
-        4649,
-        12201
-       ],
-       [
-        4774,
-        27509
-       ],
-       [
-        4899,
-        36302
-       ],
-       [
-        5023,
-        39840
-       ],
-       [
-        5149,
-        41102
-       ],
-       [
-        5274,
-        40944
-       ],
-       [
-        5398,
-        39828
-       ],
-       [
-        5524,
-        28825
-       ],
-       [
-        5648,
-        16070
-       ],
-       [
-        5774,
-        9265
-       ],
-       [
-        5898,
-        5221
-       ],
-       [
-        6024,
-        7490
-       ],
-       [
-        6149,
-        17292
-       ],
-       [
-        6274,
-        31151
-       ],
-       [
-        6399,
-        41466
-       ],
-       [
-        6523,
-        41970
-       ],
-       [
-        6648,
-        41149
-       ],
-       [
-        6773,
-        40476
-       ],
-       [
-        6898,
-        40451
-       ],
-       [
-        7023,
-        40435
-       ],
-       [
-        7148,
-        36404
-       ],
-       [
-        7273,
-        30728
-       ],
-       [
-        7399,
-        27005
-       ],
-       [
-        7523,
-        27599
-       ],
-       [
-        7649,
-        28350
-       ],
-       [
-        7774,
-        29629
-       ],
-       [
-        7898,
-        31294
-       ],
-       [
-        8024,
-        32579
-       ],
-       [
-        8149,
-        27053
-       ],
-       [
-        8273,
-        21889
-       ],
-       [
-        8399,
-        21735
-       ],
-       [
-        8523,
-        23741
-       ]
-      ]
-     },
-     "title": {
-      "pixels": 628,
-      "steps": [
-       [
-        148,
-        361
-       ],
-       [
-        273,
-        514
-       ],
-       [
-        399,
-        546
-       ],
-       [
-        524,
-        446
-       ],
-       [
-        649,
-        524
-       ],
-       [
-        773,
-        472
-       ],
-       [
-        898,
-        514
-       ],
-       [
-        1024,
-        543
-       ],
-       [
-        1149,
-        562
-       ],
-       [
-        1273,
-        571
-       ],
-       [
-        1399,
-        576
-       ],
-       [
-        1523,
-        595
-       ],
-       [
-        1649,
-        567
-       ],
-       [
-        1773,
-        607
-       ],
-       [
-        1898,
-        601
-       ],
-       [
-        2023,
-        610
-       ],
-       [
-        2148,
-        608
-       ],
-       [
-        2273,
-        613
-       ],
-       [
-        2398,
-        605
-       ],
-       [
-        2523,
-        613
-       ],
-       [
-        2649,
-        577
-       ],
-       [
-        2774,
-        606
-       ],
-       [
-        2899,
-        601
-       ],
-       [
-        3024,
-        593
-       ],
-       [
-        3149,
-        607
-       ],
-       [
-        3274,
-        597
-       ],
-       [
-        3398,
-        554
-       ],
-       [
-        3524,
-        473
-       ],
-       [
-        3648,
-        431
-       ],
-       [
-        3774,
-        354
-       ],
-       [
-        3899,
-        72
-       ],
-       [
-        4024,
-        0
-       ],
-       [
-        4148,
-        5
-       ],
-       [
-        4273,
-        230
-       ],
-       [
-        4398,
-        392
-       ],
-       [
-        4523,
-        460
-       ],
-       [
-        4649,
-        506
-       ],
-       [
-        4774,
-        594
-       ],
-       [
-        4899,
-        597
-       ],
-       [
-        5023,
-        603
-       ],
-       [
-        5149,
-        593
-       ],
-       [
-        5274,
-        617
-       ],
-       [
-        5398,
-        589
-       ],
-       [
-        5524,
-        598
-       ],
-       [
-        5648,
-        615
-       ],
-       [
-        5774,
-        611
-       ],
-       [
-        5898,
-        620
-       ],
-       [
-        6024,
-        608
-       ],
-       [
-        6149,
-        594
-       ],
-       [
-        6274,
-        612
-       ],
-       [
-        6399,
-        571
-       ],
-       [
-        6523,
-        586
-       ],
-       [
-        6648,
-        589
-       ],
-       [
-        6773,
-        585
-       ],
-       [
-        6898,
-        581
-       ],
-       [
-        7023,
-        550
-       ],
-       [
-        7148,
-        530
-       ],
-       [
-        7273,
-        501
-       ],
-       [
-        7399,
-        430
-       ],
-       [
-        7523,
-        331
-       ],
-       [
-        7649,
-        93
-       ],
-       [
-        7774,
-        49
-       ],
-       [
-        7898,
-        6
-       ],
-       [
-        8024,
-        0
-       ],
-       [
-        8149,
-        0
-       ],
-       [
-        8273,
-        35
-       ],
-       [
-        8399,
-        68
-       ],
-       [
-        8523,
-        208
-       ]
-      ]
-     }
-    },
-    "reduce": {
-     "background": {
-      "pixels": 51043,
-      "steps": [
-       [
-        140,
-        0
-       ],
-       [
-        265,
-        0
-       ],
-       [
-        390,
-        0
-       ],
-       [
-        515,
-        0
-       ],
-       [
-        640,
-        0
-       ],
-       [
-        765,
-        0
-       ],
-       [
-        895,
-        0
-       ],
-       [
-        1015,
-        0
-       ],
-       [
-        1141,
-        0
-       ],
-       [
-        1265,
-        0
-       ],
-       [
-        1390,
-        0
-       ],
-       [
-        1515,
-        0
-       ],
-       [
-        1640,
-        0
-       ],
-       [
-        1765,
-        0
-       ],
-       [
-        1895,
-        0
-       ],
-       [
-        2015,
-        0
-       ],
-       [
-        2144,
-        0
-       ],
-       [
-        2265,
-        0
-       ],
-       [
-        2390,
-        0
-       ],
-       [
-        2515,
-        0
-       ],
-       [
-        2645,
-        0
-       ],
-       [
-        2765,
-        0
-       ],
-       [
-        2890,
-        0
-       ],
-       [
-        3015,
-        0
-       ],
-       [
-        3145,
-        0
-       ],
-       [
-        3269,
-        0
-       ],
-       [
-        3390,
-        0
-       ]
-      ]
-     },
-     "title": {
-      "pixels": 627,
-      "steps": [
-       [
-        140,
-        0
-       ],
-       [
-        265,
-        0
-       ],
-       [
-        390,
-        0
-       ],
-       [
-        515,
-        0
-       ],
-       [
-        640,
-        0
-       ],
-       [
-        765,
-        0
-       ],
-       [
-        895,
-        0
-       ],
-       [
-        1015,
-        0
-       ],
-       [
-        1141,
-        0
-       ],
-       [
-        1265,
-        0
-       ],
-       [
-        1390,
-        0
-       ],
-       [
-        1515,
-        0
-       ],
-       [
-        1640,
-        0
-       ],
-       [
-        1765,
-        0
-       ],
-       [
-        1895,
-        0
-       ],
-       [
-        2015,
-        0
-       ],
-       [
-        2144,
-        0
-       ],
-       [
-        2265,
-        0
-       ],
-       [
-        2390,
-        0
-       ],
-       [
-        2515,
-        0
-       ],
-       [
-        2645,
-        0
-       ],
-       [
-        2765,
-        0
-       ],
-       [
-        2890,
-        0
-       ],
-       [
-        3015,
-        0
-       ],
-       [
-        3145,
-        0
-       ],
-       [
-        3269,
-        0
-       ],
-       [
-        3390,
-        0
-       ]
-      ]
-     }
-    },
-    "assets": {
-     "app.css": "5d442c22213b545048fc260254cafc7eee73e3a67f8234ea0e861ab427f86209",
-     "look-home.css": "3742dfbb8815ceb9a79f25cdf8a2479dad0401c53f787523f0830ef37319cee0",
-     "look-calendar.css": "ce849c90bc8ec101c150eb0d16ae0385e003841c1d05aab61680bca6c988c46c",
-     "look-order.css": "08335cf3398d9f78ec7d813a25e3fee1556fdbb80d30560dfdd93e4cffb33b2f",
-     "look-team.css": "41c72bef15dc4acb9679f5f3edbb6c1ff0df8d337203538d7b6635be2d88978e",
-     "look-records.css": "9c82bf8e43b118faa7a34e4d6c260d09b0aacb9605503375759248bcdbc93c7e",
-     "colour.css": "d7bbde2a94e695b8064c01e2342aa69bdfec1f8dba604544306d92518e05dc85",
-     "swarm.css": "12ee29f0d12215967f7344727b0d8af6fd3af24f4f87ce8e321035b0074c7bad",
-     "icons.js": "af958d0b8fd32168a1d2db3a4450927cf3d20c1fd2eb4d0dc559f4d64820fc1b",
-     "status.js": "ea2b20db35b62d8b21432a95f54fe2b4ce0b8372969d8e6763b515c695a5ee5d",
-     "board.js": "e9f6c686b67852bb6838dbfcaf06a64385cf6ed44f2d03f10d67b6b93cf509ed",
-     "swarm.js": "d4cb9c903f61abd152e9990f31d46dc93779e6f2eb2b2fe200aa9b11754a7538",
-     "app.js": "4b41f9296e593347d542510199dbe9b8170d933e6a6b3d6fe140de578bcc6be4"
-    },
-    "runtime": "aad33babe4579d85fee15ba897ff69b2626b0b74e67f3c048499ee66f3852fd9"
-   },
-   "after": {
     "normal": {
      "background": {
       "pixels": 51927,
@@ -42105,7 +41444,809 @@ cat > 'web/quality-data.json' <<'OC_EOF_100'
     },
     "runtime": "060acf4fcee7d4988db39d60e8b7ed3bd47a91724e203f04b865229e799d7fae"
    },
-   "parent": "112f847bfae85eb59f825775f78c1ac7c6a64fb1b9f3b7c9eb25d999dd9dc563"
+   "after": {
+    "normal": {
+     "background": {
+      "pixels": 51927,
+      "steps": [
+       [
+        147,
+        14227
+       ],
+       [
+        273,
+        17610
+       ],
+       [
+        398,
+        17892
+       ],
+       [
+        523,
+        19136
+       ],
+       [
+        647,
+        20732
+       ],
+       [
+        772,
+        24509
+       ],
+       [
+        898,
+        35165
+       ],
+       [
+        1023,
+        39594
+       ],
+       [
+        1148,
+        38664
+       ],
+       [
+        1272,
+        35534
+       ],
+       [
+        1398,
+        31445
+       ],
+       [
+        1523,
+        27409
+       ],
+       [
+        1647,
+        21284
+       ],
+       [
+        1772,
+        13521
+       ],
+       [
+        1897,
+        29601
+       ],
+       [
+        2022,
+        37554
+       ],
+       [
+        2147,
+        39952
+       ],
+       [
+        2271,
+        41561
+       ],
+       [
+        2398,
+        42555
+       ],
+       [
+        2523,
+        43429
+       ],
+       [
+        2647,
+        43711
+       ],
+       [
+        2772,
+        34452
+       ],
+       [
+        2898,
+        14094
+       ],
+       [
+        3022,
+        2204
+       ],
+       [
+        3147,
+        373
+       ],
+       [
+        3272,
+        706
+       ],
+       [
+        3398,
+        11534
+       ],
+       [
+        3523,
+        33471
+       ],
+       [
+        3648,
+        43320
+       ],
+       [
+        3773,
+        43032
+       ],
+       [
+        3897,
+        42264
+       ],
+       [
+        4022,
+        41584
+       ],
+       [
+        4146,
+        37611
+       ],
+       [
+        4272,
+        30596
+       ],
+       [
+        4396,
+        13416
+       ],
+       [
+        4522,
+        1
+       ],
+       [
+        4647,
+        6995
+       ],
+       [
+        4773,
+        24161
+       ],
+       [
+        4897,
+        34584
+       ],
+       [
+        5023,
+        39533
+       ],
+       [
+        5148,
+        41934
+       ],
+       [
+        5273,
+        42279
+       ],
+       [
+        5397,
+        41952
+       ],
+       [
+        5523,
+        34864
+       ],
+       [
+        5647,
+        19003
+       ],
+       [
+        5772,
+        11541
+       ],
+       [
+        5897,
+        5605
+       ],
+       [
+        6023,
+        6270
+       ],
+       [
+        6148,
+        14323
+       ],
+       [
+        6272,
+        27990
+       ],
+       [
+        6398,
+        41073
+       ],
+       [
+        6522,
+        43431
+       ],
+       [
+        6647,
+        42756
+       ],
+       [
+        6772,
+        41903
+       ],
+       [
+        6897,
+        41161
+       ],
+       [
+        7022,
+        40709
+       ],
+       [
+        7147,
+        38180
+       ],
+       [
+        7272,
+        33702
+       ],
+       [
+        7398,
+        28179
+       ],
+       [
+        7523,
+        28318
+       ],
+       [
+        7647,
+        28634
+       ],
+       [
+        7772,
+        29148
+       ],
+       [
+        7898,
+        31103
+       ],
+       [
+        8022,
+        32704
+       ],
+       [
+        8147,
+        29501
+       ],
+       [
+        8272,
+        22749
+       ],
+       [
+        8398,
+        22442
+       ],
+       [
+        8522,
+        23536
+       ]
+      ]
+     },
+     "title": {
+      "pixels": 628,
+      "steps": [
+       [
+        147,
+        323
+       ],
+       [
+        273,
+        478
+       ],
+       [
+        398,
+        529
+       ],
+       [
+        523,
+        459
+       ],
+       [
+        647,
+        484
+       ],
+       [
+        772,
+        500
+       ],
+       [
+        898,
+        515
+       ],
+       [
+        1023,
+        528
+       ],
+       [
+        1148,
+        553
+       ],
+       [
+        1272,
+        579
+       ],
+       [
+        1398,
+        588
+       ],
+       [
+        1523,
+        593
+       ],
+       [
+        1647,
+        587
+       ],
+       [
+        1772,
+        585
+       ],
+       [
+        1897,
+        614
+       ],
+       [
+        2022,
+        606
+       ],
+       [
+        2147,
+        611
+       ],
+       [
+        2271,
+        626
+       ],
+       [
+        2398,
+        616
+       ],
+       [
+        2523,
+        616
+       ],
+       [
+        2647,
+        560
+       ],
+       [
+        2772,
+        597
+       ],
+       [
+        2898,
+        613
+       ],
+       [
+        3022,
+        596
+       ],
+       [
+        3147,
+        605
+       ],
+       [
+        3272,
+        593
+       ],
+       [
+        3398,
+        588
+       ],
+       [
+        3523,
+        480
+       ],
+       [
+        3648,
+        445
+       ],
+       [
+        3773,
+        372
+       ],
+       [
+        3897,
+        192
+       ],
+       [
+        4022,
+        0
+       ],
+       [
+        4146,
+        0
+       ],
+       [
+        4272,
+        183
+       ],
+       [
+        4396,
+        376
+       ],
+       [
+        4522,
+        445
+       ],
+       [
+        4647,
+        480
+       ],
+       [
+        4773,
+        587
+       ],
+       [
+        4897,
+        593
+       ],
+       [
+        5023,
+        603
+       ],
+       [
+        5148,
+        593
+       ],
+       [
+        5273,
+        613
+       ],
+       [
+        5397,
+        597
+       ],
+       [
+        5523,
+        560
+       ],
+       [
+        5647,
+        616
+       ],
+       [
+        5772,
+        616
+       ],
+       [
+        5897,
+        626
+       ],
+       [
+        6023,
+        611
+       ],
+       [
+        6148,
+        606
+       ],
+       [
+        6272,
+        614
+       ],
+       [
+        6398,
+        585
+       ],
+       [
+        6522,
+        586
+       ],
+       [
+        6647,
+        594
+       ],
+       [
+        6772,
+        587
+       ],
+       [
+        6897,
+        580
+       ],
+       [
+        7022,
+        553
+       ],
+       [
+        7147,
+        529
+       ],
+       [
+        7272,
+        516
+       ],
+       [
+        7398,
+        439
+       ],
+       [
+        7523,
+        342
+       ],
+       [
+        7647,
+        199
+       ],
+       [
+        7772,
+        54
+       ],
+       [
+        7898,
+        30
+       ],
+       [
+        8022,
+        0
+       ],
+       [
+        8147,
+        1
+       ],
+       [
+        8272,
+        33
+       ],
+       [
+        8398,
+        52
+       ],
+       [
+        8522,
+        201
+       ]
+      ]
+     }
+    },
+    "reduce": {
+     "background": {
+      "pixels": 52301,
+      "steps": [
+       [
+        144,
+        0
+       ],
+       [
+        269,
+        0
+       ],
+       [
+        394,
+        0
+       ],
+       [
+        519,
+        0
+       ],
+       [
+        644,
+        0
+       ],
+       [
+        769,
+        0
+       ],
+       [
+        894,
+        0
+       ],
+       [
+        1019,
+        0
+       ],
+       [
+        1144,
+        0
+       ],
+       [
+        1268,
+        0
+       ],
+       [
+        1394,
+        0
+       ],
+       [
+        1518,
+        0
+       ],
+       [
+        1644,
+        0
+       ],
+       [
+        1768,
+        0
+       ],
+       [
+        1894,
+        0
+       ],
+       [
+        2019,
+        0
+       ],
+       [
+        2143,
+        0
+       ],
+       [
+        2269,
+        0
+       ],
+       [
+        2394,
+        0
+       ],
+       [
+        2519,
+        0
+       ],
+       [
+        2644,
+        0
+       ],
+       [
+        2769,
+        0
+       ],
+       [
+        2893,
+        0
+       ],
+       [
+        3019,
+        0
+       ],
+       [
+        3144,
+        0
+       ],
+       [
+        3268,
+        0
+       ],
+       [
+        3393,
+        0
+       ]
+      ]
+     },
+     "title": {
+      "pixels": 627,
+      "steps": [
+       [
+        144,
+        0
+       ],
+       [
+        269,
+        0
+       ],
+       [
+        394,
+        0
+       ],
+       [
+        519,
+        0
+       ],
+       [
+        644,
+        0
+       ],
+       [
+        769,
+        0
+       ],
+       [
+        894,
+        0
+       ],
+       [
+        1019,
+        0
+       ],
+       [
+        1144,
+        0
+       ],
+       [
+        1268,
+        0
+       ],
+       [
+        1394,
+        0
+       ],
+       [
+        1518,
+        0
+       ],
+       [
+        1644,
+        0
+       ],
+       [
+        1768,
+        0
+       ],
+       [
+        1894,
+        0
+       ],
+       [
+        2019,
+        0
+       ],
+       [
+        2143,
+        0
+       ],
+       [
+        2269,
+        0
+       ],
+       [
+        2394,
+        0
+       ],
+       [
+        2519,
+        0
+       ],
+       [
+        2644,
+        0
+       ],
+       [
+        2769,
+        0
+       ],
+       [
+        2893,
+        0
+       ],
+       [
+        3019,
+        0
+       ],
+       [
+        3144,
+        0
+       ],
+       [
+        3268,
+        0
+       ],
+       [
+        3393,
+        0
+       ]
+      ]
+     }
+    },
+    "assets": {
+     "app.css": "5d442c22213b545048fc260254cafc7eee73e3a67f8234ea0e861ab427f86209",
+     "look-home.css": "3742dfbb8815ceb9a79f25cdf8a2479dad0401c53f787523f0830ef37319cee0",
+     "look-calendar.css": "29bc824dba486a6c05cbcefd5f77afc2ee400f1138956126d3d975026302ad4f",
+     "look-order.css": "b75e89f20cb5c1761b07a614d3ac6fd41dcf999bcf4fc51bec24a17aedf28ba5",
+     "look-team.css": "617cf5935ac9ca7421a6ffe1334d6a9a68316763af53de6724f1d58d55537a73",
+     "look-records.css": "311490616136c021d20ef999c38ebee1e4a4c4634ecd5fb823758e16f3490c83",
+     "colour.css": "fa2c37ad3c8bf3ed76e2f07ee1505c507ed150bd2d1a1772de569a6db1f5c25a",
+     "swarm.css": "12ee29f0d12215967f7344727b0d8af6fd3af24f4f87ce8e321035b0074c7bad",
+     "icons.js": "af958d0b8fd32168a1d2db3a4450927cf3d20c1fd2eb4d0dc559f4d64820fc1b",
+     "status.js": "ea2b20db35b62d8b21432a95f54fe2b4ce0b8372969d8e6763b515c695a5ee5d",
+     "board.js": "e9f6c686b67852bb6838dbfcaf06a64385cf6ed44f2d03f10d67b6b93cf509ed",
+     "swarm.js": "d4cb9c903f61abd152e9990f31d46dc93779e6f2eb2b2fe200aa9b11754a7538",
+     "app.js": "c02f01090f595839fff3afead39c91a80b5c2c9324d47c55f6979b728c0d3a34"
+    },
+    "runtime": "7019c4912bc7d47d8faba963f1cccaadcdba8deba0c0dca7d4650e03555411a9"
+   },
+   "parent": "64e3226b9f50552689156f32f97b18cb0ec0d8b9b4cfcd025ffd8226e744fd3e"
   }
  }
 }
@@ -44039,18 +44180,18 @@ edabc8ce7d7bf61d4ecd36c6af60f1f2b85aa7a8a1e1c16c8e4402dc80f8adb3 tools/quality_b
 299dbc95507d6d081c4b188a7841bdc228a37aec4f193d1de235945087256a77 tools/quality_policy.json
 0bf27d88366d574fe48425f4b2db3b2549de673640d828c898d0f468f64c8e28 tools/quality_v1.sha256
 5d442c22213b545048fc260254cafc7eee73e3a67f8234ea0e861ab427f86209 web/app.css
-662123c70471fd23a9bc75e17ca146efef01e52d91d87338305d5d94f9d043da web/app.js
+c02f01090f595839fff3afead39c91a80b5c2c9324d47c55f6979b728c0d3a34 web/app.js
 e9f6c686b67852bb6838dbfcaf06a64385cf6ed44f2d03f10d67b6b93cf509ed web/board.js
-39ad6e268574724a5d5ab5a2ae26aa55a14d247cc78cc0f856f7f6f0d4d0ef5a web/colour.css
+fa2c37ad3c8bf3ed76e2f07ee1505c507ed150bd2d1a1772de569a6db1f5c25a web/colour.css
 2219b6976077d91c736e260e16f223f406772bfbf78781923c231f85b1adbcde web/format.mjs
 af958d0b8fd32168a1d2db3a4450927cf3d20c1fd2eb4d0dc559f4d64820fc1b web/icons.js
-e8975cfc00c9b07b7114fe2d44a963fd549f36d8333eae63d7c80615d90b4985 web/index.html
-ce849c90bc8ec101c150eb0d16ae0385e003841c1d05aab61680bca6c988c46c web/look-calendar.css
+24cd16b2f25c7bfbed1a71f67bf467cf8abd02753e0ba7980ed07ff6520941db web/index.html
+29bc824dba486a6c05cbcefd5f77afc2ee400f1138956126d3d975026302ad4f web/look-calendar.css
 3742dfbb8815ceb9a79f25cdf8a2479dad0401c53f787523f0830ef37319cee0 web/look-home.css
-d918c34c41ebc02d3c216635019fca3c831fa57ecdc9107c6876572e5ea910c4 web/look-order.css
-9c82bf8e43b118faa7a34e4d6c260d09b0aacb9605503375759248bcdbc93c7e web/look-records.css
-a73c27f02e5b3bad9a6de7b125fe1fbaf48aec0c6b609be56b96081bfdef0e05 web/look-team.css
-7c41f4f3d9f6f2fd42b2eac84f9d6447491c873e2f2d72e5b50a4dfd4e39f21b web/quality-data.json
+b75e89f20cb5c1761b07a614d3ac6fd41dcf999bcf4fc51bec24a17aedf28ba5 web/look-order.css
+311490616136c021d20ef999c38ebee1e4a4c4634ecd5fb823758e16f3490c83 web/look-records.css
+617cf5935ac9ca7421a6ffe1334d6a9a68316763af53de6724f1d58d55537a73 web/look-team.css
+f5152f22e22b125d44967f7bb0aa1dd27d77ed52a294908a6972b8c2da893ca7 web/quality-data.json
 2f48c86410f410a49509f82dd55defe7999f0ae4b586a8af3b76a9ea24cdf3b0 web/quality.css
 9f6274322ba2642e9eeaebe3751e9dd013e8700f720e73571755f621e9c82db9 web/quality.html
 4dbbba02c54ee09eeed687b4030f8c80ae72e0948b0df2efa1d14a3deb5c6383 web/quality.js
